@@ -4,6 +4,7 @@ import { CanvasBoard } from './canvas';
 import { Connection } from './network';
 import { DrawingState } from './state';
 import { createUI } from './ui';
+import { diagnostics } from './diagnostics';
 
 const ui = createUI(document.querySelector<HTMLElement>('#app')!);
 const state = new DrawingState();
@@ -16,6 +17,7 @@ let offset = 1;
 let connection: Connection;
 const cursors = new Map<string, {element:HTMLElement;updated:number}>();
 function render() {
+  const started = diagnostics ? performance.now() : 0;
   const strokes = state.strokes.map(s => {
     const prediction = predictions.get(s.id);
     if (s.completed) { predictions.delete(s.id); return s; }
@@ -25,6 +27,7 @@ function render() {
   board.setStrokes(strokes.sort((a,b) => a.order-b.order));
   ui.setEmpty(!strokes.some(s => s.active && s.tool === 'brush'));
   ui.setHistory(enabled && state.canUndo, enabled && state.canRedo);
+  diagnostics?.record('predictionMergeMs', performance.now()-started);
 }
 function flush() {
   while (activeId && pending.length && enabled) {
@@ -50,7 +53,9 @@ const board = new CanvasBoard(ui.canvas,{
     if (!activeId || !enabled) return;
     const prediction = predictions.get(activeId);
     if (!prediction) return;
+    const started = diagnostics ? performance.now() : 0;
     predictions.set(activeId,{...prediction,points:[...prediction.points,...points]});
+    diagnostics?.record('predictionAppendMs', performance.now()-started);
     pending.push(...points); if (pending.length >= BATCH_SIZE) flush(); render();
   },
   onEnd() { if (activeId && enabled) { flush(); connection.send({type:'stroke:end',id:activeId}); activeId = null; } },

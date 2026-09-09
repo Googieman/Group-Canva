@@ -1,4 +1,5 @@
 import { BOARD_HEIGHT, BOARD_WIDTH, type Point, type Stroke, type Tool } from '../shared/protocol';
+import { diagnostics } from './diagnostics';
 
 export interface CanvasCallbacks {
   onBegin(point: Point): void;
@@ -151,6 +152,7 @@ export class CanvasBoard {
     if (!this.enabled || this.pointerId !== null || event.button !== 0) return;
     const point = this.point(event);
     if (!point) return;
+    diagnostics?.input(event.timeStamp);
     event.preventDefault();
     // Capture before publishing a begin: failed capture must not leave an orphan stroke.
     try { this.canvas.setPointerCapture(event.pointerId); } catch { return; }
@@ -194,6 +196,7 @@ export class CanvasBoard {
       .filter((point): point is Point => point !== null);
     const samples = filterSamples(points, this.lastPoint, final);
     if (!samples.length) return;
+    diagnostics?.input(event.timeStamp);
     this.lastPoint = samples[samples.length - 1];
     this.callbacks.onPoints(samples);
   }
@@ -247,13 +250,16 @@ export class CanvasBoard {
   }
 
   private render(): void {
+    const started = diagnostics ? performance.now() : 0;
     this.resizeBacking();
+    const compareStarted = diagnostics ? performance.now() : 0;
     let stableCount = 0;
     while (stableCount < this.strokes.length && this.strokes[stableCount].completed) stableCount++;
     // Only a completed, contiguous prefix can be cached. Later erasers must still
     // composite over earlier live ink when new points arrive beneath the eraser.
     const prefixMatches = this.cachedPrefix.length <= stableCount
       && this.cachedPrefix.every((cached, i) => sameInk(cached, this.strokes[i]));
+    diagnostics?.record('prefixCompareMs', performance.now()-compareStarted);
     if (!prefixMatches) {
       this.cacheContext.setTransform(1, 0, 0, 1, 0, 0);
       this.cacheContext.clearRect(0, 0, this.cache.width, this.cache.height);
@@ -267,10 +273,16 @@ export class CanvasBoard {
       this.cachedPrefix.push({ ...stroke, points: stroke.points.map(point => ({ ...point })) });
     }
     this.context.setTransform(1, 0, 0, 1, 0, 0);
+    const copyStarted = diagnostics ? performance.now() : 0;
     this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.context.globalCompositeOperation = 'source-over';
     this.context.drawImage(this.cache, 0, 0);
+    diagnostics?.record('surfaceCopyMs', performance.now()-copyStarted);
     this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    const replayStarted = diagnostics ? performance.now() : 0;
     for (let i = stableCount; i < this.strokes.length; i++) drawStroke(this.context, this.strokes[i]);
+    diagnostics?.record('tailReplayMs', performance.now()-replayStarted);
+    diagnostics?.record('renderMs', performance.now()-started);
+    diagnostics?.painted();
   }
 }

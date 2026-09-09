@@ -15,7 +15,7 @@ const DEFAULT_LIMITS: Limits = {
   pointsPerStroke: 10000, pointsPerRoom: 50000, totalPoints: 250000, usedIdsPerRoom: 20000,
   commandsPerSecond: 150, commandBurst: 300, idleRoomMs: 30 * 60 * 1000,
 };
-export interface ServerOptions { port?: number; host?: string; allowedOrigins?: string[]; limits?: Partial<Limits>; staticDir?: string }
+export interface ServerOptions { port?: number; host?: string; allowedOrigins?: string[]; limits?: Partial<Limits>; staticDir?: string; onCommandTiming?: (durationMs: number) => void }
 interface Room {
   id: string; epoch: string; revision: number; nextOrder: number; nextCompletion: number;
   strokes: Map<string, Stroke>; usedIds: Set<string>; users: Map<string, User>;
@@ -223,11 +223,13 @@ export async function createAppServer(options: ServerOptions = {}) {
       reply(ok);
     });
     socket.on('command', (value: unknown, ack) => {
+      const started = options.onCommandTiming ? performance.now() : 0;
       let result: Result;
       if (!token()) result = fail('Drawing rate limit exceeded. Please slow down.');
       else if (!room) result = fail('Join a room before drawing.');
       else if (!validCommand(value)) result = fail('Invalid drawing command.');
       else result = apply(room, socket.id, value);
+      options.onCommandTiming?.(performance.now()-started);
       if (typeof ack === 'function') ack(result);
       else if (!result.ok) socket.emit('server:error', result.error);
     });
