@@ -30,4 +30,4 @@ The post sample is a same-machine Chromium measurement with one repetition and a
 
 ## Commit
 
-Commit: `f2aee95` (amended below to include this report).
+Package commit: `f2aee95` (`perf: cache mixed canvas tail operations`).
