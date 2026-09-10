@@ -10,3 +10,10 @@ for(const dpr of [1,1.5,2])test(`incremental compositing matches full replay at 
   const result=await page.evaluate(()=>(window as any).verifyCanvasSequence());
   expect(result).toEqual({checks:41,dpr});await context.close();
 });
+for(const dpr of [1,1.5,2])test(`mixed tail cache matches full replay at DPR ${dpr}`,async({browser})=>{
+  const context=await browser.newContext({deviceScaleFactor:dpr});const page=await context.newPage();
+  await page.goto(`${url}benchmarks/render.html`);
+  await page.waitForFunction(()=>typeof (window as any).verifyMixedTailSequence==='function');
+  const result=await page.evaluate(()=>(window as any).verifyMixedTailSequence());
+  expect(result).toEqual({checks:18,dpr});await context.close();
+});

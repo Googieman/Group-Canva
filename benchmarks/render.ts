@@ -121,3 +121,72 @@ async function verifySequence() {
   return {checks,dpr:reference.width/1600};
 }
 Object.assign(window,{verifyCanvasSequence:verifySequence});
+
+// A separate mixed-tail regression keeps the cache path under the same
+// independent full-replay oracle while changing live, history, and order
+// state around both brush and eraser operations.
+async function verifyMixedTailSequence() {
+  const reference=document.createElement('canvas');reference.width=canvas.width;reference.height=canvas.height;
+  const ctx=reference.getContext('2d')!;let checks=0;
+  const replay=(strokes:Stroke[])=>{
+    ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,reference.width,reference.height);
+    const dpr=reference.width/1600;ctx.setTransform(dpr,0,0,dpr,0,0);
+    for(const s of [...strokes].filter(s=>s.active).sort((a,b)=>a.order-b.order||a.id.localeCompare(b.id))){
+      ctx.globalCompositeOperation=s.tool==='eraser'?'destination-out':'source-over';
+      ctx.strokeStyle=ctx.fillStyle=s.color;ctx.lineWidth=s.width;ctx.lineCap=ctx.lineJoin='round';ctx.beginPath();
+      if(s.points.length===1){ctx.arc(s.points[0].x,s.points[0].y,s.width/2,0,Math.PI*2);ctx.fill();}
+      else if(s.points.length){ctx.moveTo(s.points[0].x,s.points[0].y);for(const p of s.points.slice(1))ctx.lineTo(p.x,p.y);ctx.stroke();}
+    }
+  };
+  const check=async(strokes:Stroke[])=>{
+    board.setStrokes(strokes);await nextFrame();replay(strokes);
+    const actual=canvas.getContext('2d')!.getImageData(0,0,canvas.width,canvas.height).data;
+    const expected=ctx.getImageData(0,0,reference.width,reference.height).data;let mismatches=0;const examples:unknown[]=[];
+    for(let i=0;i<actual.length;i+=4){
+      if(actual.slice(i,i+4).every((v,c)=>v===expected[i+c]))continue;
+      if(actual[i+3]===expected[i+3]&&[0,1,2].every(c=>Math.abs(actual[i+c]-expected[i+c])<=1))continue;
+      const x=i/4%canvas.width,y=Math.floor(i/4/canvas.width);let edge=false;
+      for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+        if(x+dx<0||x+dx>=canvas.width||y+dy<0||y+dy>=canvas.height)continue;
+        const n=((y+dy)*canvas.width+x+dx)*4;
+        if(expected.slice(n,n+4).some((v,c)=>v!==expected[i+c]))edge=true;
+      }
+      if(!edge){mismatches++;if(examples.length<8)examples.push({x,y,actual:[...actual.slice(i,i+4)],expected:[...expected.slice(i,i+4)]});}
+    }
+    if(mismatches)throw new Error(`Mixed-tail replay mismatch at step ${checks}: ${mismatches} pixels ${JSON.stringify(examples)}`);checks++;
+  };
+  const make=(id:string,order:number,tool:'brush'|'eraser',completed=true):Stroke=>{
+    // Completed operations occupy distinct tiles so Chromium exercises real
+    // cached brush images and eraser masks. The unfinished and live strokes
+    // deliberately overlap the two eraser slots while remaining direct.
+    const slot=order===1?4:order===30?9:order-2;
+    const x=(slot%6)*256,y=Math.floor(slot/6)*256;
+    return {id,order,tool,color:tool==='eraser'?'#111111':'#4a35c5',width:tool==='eraser'?36:10,
+      userId:'mixed-tail',completed,completionOrder:completed?order:null,active:true,
+      points:[{x:x+48,y:y+90},{x:x+190,y:y+150}]};
+  };
+  let unfinished=make('unfinished',1,'brush',false);
+  let operations:Stroke[]=[unfinished];
+  for(let i=0;i<14;i++)operations.push(make(`mixed-${i}`,2+i,i===4||i===9?'eraser':'brush',true));
+  let live=make('live',30,'brush',false);operations.push(live);
+  await check(operations);
+  unfinished={...unfinished,points:[...unfinished.points,{x:560,y:380}]};operations[0]=unfinished;await check(operations);
+  unfinished={...unfinished,points:[...unfinished.points,{x:760,y:395}]};operations[0]=unfinished;await check(operations);
+  live={...live,points:[...live.points,{x:700,y:520}]};operations[operations.length-1]=live;await check(operations);
+  operations[5]={...operations[5],active:false};await check(operations);
+  operations[5]={...operations[5],active:true};await check(operations);
+  operations[3]={...operations[3],active:false};await check(operations);
+  operations[3]={...operations[3],active:true};await check(operations);
+  operations[10]={...operations[10],order:40};await check(operations);
+  operations[10]={...operations[10],order:11};await check(operations);
+  operations[0]={...unfinished,points:[...unfinished.points,{x:980,y:410}]};unfinished=operations[0];await check(operations);
+  operations[7]={...operations[7],width:18};await check(operations);
+  operations[7]={...operations[7],points:[...operations[7].points,{x:850,y:470}]};await check(operations);
+  operations[10]={...operations[10],active:false};await check(operations);
+  operations[10]={...operations[10],active:true};await check(operations);
+  operations[4]={...operations[4],active:false};await check(operations);
+  operations[4]={...operations[4],active:true};await check(operations);
+  await check([]);
+  return {checks,dpr:reference.width/1600};
+}
+Object.assign(window,{verifyMixedTailSequence});

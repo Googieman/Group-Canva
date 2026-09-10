@@ -65,3 +65,9 @@ Remaining validation:
 - Persistence, shapes, text, selection, and multi-region clock synchronization are outside this MVP and were not added.
 
 See [benchmarks/README.md](../benchmarks/README.md) for commands and metric definitions, and [SYNC-REVIEW.md](SYNC-REVIEW.md) for the synchronization invariants and regression coverage.
+
+## Task 3 mixed-tail cache decision
+
+The proposed tile operation cache was rejected after the genuine post sample in `benchmarks/results/mixed-tail-post.json` regressed the mixed scenarios to 14.0257, 15.1481, and 16.2760 FPS (eraser intervals 4, 7, and 16). The Task 2 baseline ranges were 15.67–16.00, 16.45–17.32, and 17.86–18.72 FPS respectively. The post run was one 3-second repetition, while the baseline was three 5-second repetitions, so these values are recorded as evidence and not a pass/fail performance gate.
+
+Task 3 leaves `client/canvas.ts` unchanged and removes the cache-specific unit tests. The 18-transition `verifyMixedTailSequence` browser oracle remains as independent correctness coverage. The raw post and Task 2 diagnostic JSON files are retained. No accepted cache implementation, memory-cap measurement, or performance improvement is claimed.

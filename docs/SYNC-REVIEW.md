@@ -48,3 +48,9 @@ The measured bottleneck is main-thread/frame scheduling: the 50–67 ms median f
 Browser compositing tests compare incremental rendering against an independent full replay over 41 transitions at DPR 1, 1.5, and 2. The sequence covers late lower points beneath a later eraser, completion and history changes, eraser removal, begin-order reordering across an eraser, and mutation of a cached brush run before a later eraser. It requires matching alpha and interior pixels, allowing only one-channel rounding from cached transparent brush rasters and a one-device-pixel neighborhood of a reference edge where clipping affects antialias coverage. This verifies compositing semantics without turning the performance observations above into functional assertions or claiming byte-identical raster edges across repaint paths or browser engines. Native Safari and real remote collaboration remain separate validation scenarios.
 
 See [VERIFICATION.md](VERIFICATION.md) for final command results, measurements, and remaining limitations.
+
+### Task 3 cache decision
+
+The proposed bounded mixed-tail tile operation cache was rejected. The genuine post-change sample in `benchmarks/results/mixed-tail-post.json` used one 3-second Chromium repetition and measured 14.03, 15.15, and 16.28 FPS for erasers every 4, 7, and 16 strokes. Task 2's three 5-second baseline repetitions measured 15.67–16.00, 16.45–17.32, and 17.86–18.72 FPS for those scenarios. Because the mixed cases regressed and the runs differ in duration and repetition count, this is evidence against accepting the cache rather than a timing threshold or proof of a general regression.
+
+The production renderer remains unchanged by Task 3. The independent `verifyMixedTailSequence` oracle remains in the browser suite, and the raw post and diagnostic JSON artifacts are retained for review. No tile backing storage or memory-cap claim is made for the rejected implementation.
