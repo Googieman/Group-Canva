@@ -39,7 +39,7 @@ export function orderedVisibleStrokes(strokes: Stroke[]): Stroke[] {
   return strokes.filter(stroke => stroke.active).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
 }
 
-function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke): void {
+function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, cachedPath?: Path2D): void {
   if (!stroke.points.length) return;
   ctx.globalCompositeOperation = stroke.tool === 'eraser' ? 'destination-out' : 'source-over';
   ctx.lineWidth = stroke.width;
@@ -47,6 +47,11 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke): void {
   ctx.fillStyle = stroke.color;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+  if (cachedPath) {
+    if (stroke.points.length === 1) ctx.fill(cachedPath);
+    else ctx.stroke(cachedPath);
+    return;
+  }
   ctx.beginPath();
   const first = stroke.points[0];
   if (stroke.points.length === 1) {
@@ -65,12 +70,79 @@ function sameInk(a: Stroke, b: Stroke): boolean {
     && a.points.every((point, i) => point.x === b.points[i].x && point.y === b.points[i].y);
 }
 
+interface InkBounds { left: number; top: number; right: number; bottom: number; }
+
+function strokeBounds(stroke: Stroke, from = 0): InkBounds | null {
+  if (from >= stroke.points.length) return null;
+  const radius = stroke.width / 2;
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+  for (let i = from; i < stroke.points.length; i++) {
+    const point = stroke.points[i];
+    left = Math.min(left, point.x - radius);
+    top = Math.min(top, point.y - radius);
+    right = Math.max(right, point.x + radius);
+    bottom = Math.max(bottom, point.y + radius);
+  }
+  return { left, top, right, bottom };
+}
+
+function unionBounds(a: InkBounds | null, b: InkBounds | null): InkBounds | null {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    left: Math.min(a.left, b.left), top: Math.min(a.top, b.top),
+    right: Math.max(a.right, b.right), bottom: Math.max(a.bottom, b.bottom),
+  };
+}
+
+function intersects(a: InkBounds, b: InkBounds): boolean {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+}
+
+function expandBounds(bounds: InkBounds, amount: number): InkBounds {
+  return { left: bounds.left - amount, top: bounds.top - amount,
+    right: bounds.right + amount, bottom: bounds.bottom + amount };
+}
+
+function clampBounds(bounds: InkBounds): InkBounds {
+  return { left: Math.max(0, Math.min(BOARD_WIDTH, bounds.left)),
+    top: Math.max(0, Math.min(BOARD_HEIGHT, bounds.top)),
+    right: Math.max(0, Math.min(BOARD_WIDTH, bounds.right)),
+    bottom: Math.max(0, Math.min(BOARD_HEIGHT, bounds.bottom)) };
+}
+
+function mergeBounds(bounds: InkBounds[]): InkBounds[] {
+  const merged: InkBounds[] = [];
+  for (const current of bounds) {
+    let next = current;
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 0; i < merged.length; i++) {
+        if (!intersects(next, merged[i])) continue;
+        next = unionBounds(next, merged[i])!;
+        merged.splice(i, 1);
+        changed = true;
+        break;
+      }
+    }
+    merged.push(next);
+  }
+  return merged;
+}
+
 export class CanvasBoard {
   private readonly context: CanvasRenderingContext2D;
   private readonly cache: HTMLCanvasElement;
   private readonly cacheContext: CanvasRenderingContext2D;
+  private readonly tailCache: HTMLCanvasElement;
+  private readonly tailCacheContext: CanvasRenderingContext2D;
   private strokes: Stroke[] = [];
   private cachedPrefix: Stroke[] = [];
+  private paths = new Map<string, { stroke: Stroke; path: Path2D }>();
+  private cachedTail: Stroke[] = [];
+  private renderedInk = new Map<string, { stroke: Stroke; bounds: InkBounds }>();
+  private fullRepaint = true;
   private frame: number | null = null;
   private enabled = false;
   private destroyed = false;
@@ -86,9 +158,12 @@ export class CanvasBoard {
     const context = canvas.getContext('2d');
     this.cache = document.createElement('canvas');
     const cacheContext = this.cache.getContext('2d');
-    if (!context || !cacheContext) throw new Error('A 2D canvas context is required.');
+    this.tailCache = document.createElement('canvas');
+    const tailCacheContext = this.tailCache.getContext('2d');
+    if (!context || !cacheContext || !tailCacheContext) throw new Error('A 2D canvas context is required.');
     this.context = context;
     this.cacheContext = cacheContext;
+    this.tailCacheContext = tailCacheContext;
     this.canvas.style.touchAction = 'none';
     this.listeners = [
       ['pointerdown', event => this.onDown(event as PointerEvent)],
@@ -140,8 +215,13 @@ export class CanvasBoard {
     window.removeEventListener('resize', this.onResize);
     this.cache.width = 0;
     this.cache.height = 0;
+    this.tailCache.width = 0;
+    this.tailCache.height = 0;
     this.strokes = [];
     this.cachedPrefix = [];
+    this.paths.clear();
+    this.renderedInk.clear();
+    this.cachedTail = [];
   }
 
   private point(event: Pick<PointerEvent, 'clientX' | 'clientY'>): Point | null {
@@ -226,11 +306,15 @@ export class CanvasBoard {
     const dpr = Math.max(1, window.devicePixelRatio || 1);
     if (dpr === this.dpr) return;
     this.dpr = dpr;
-    for (const canvas of [this.canvas, this.cache]) {
+    for (const canvas of [this.canvas, this.cache, this.tailCache]) {
       canvas.width = Math.round(BOARD_WIDTH * dpr);
       canvas.height = Math.round(BOARD_HEIGHT * dpr);
     }
     this.cachedPrefix = [];
+    this.cachedTail = [];
+    this.paths.clear();
+    this.renderedInk.clear();
+    this.fullRepaint = true;
   }
 
   private updateCursor(): void {
@@ -252,7 +336,22 @@ export class CanvasBoard {
   private render(): void {
     const started = diagnostics ? performance.now() : 0;
     this.resizeBacking();
+    const visibleIds = new Set(this.strokes.map(stroke => stroke.id));
+    for (const id of this.paths.keys()) if (!visibleIds.has(id)) this.paths.delete(id);
     const compareStarted = diagnostics ? performance.now() : 0;
+    const dirty: InkBounds[] = [];
+    for (const previous of this.renderedInk.values()) {
+      if (!visibleIds.has(previous.stroke.id)) dirty.push(previous.bounds);
+    }
+    for (const stroke of this.strokes) {
+      const bounds = strokeBounds(stroke);
+      if (!bounds) continue;
+      const previous = this.renderedInk.get(stroke.id);
+      if (!previous || !sameInk(previous.stroke, stroke) || previous.stroke.completed !== stroke.completed) {
+        if (previous) dirty.push(previous.bounds);
+        dirty.push(bounds);
+      }
+    }
     let stableCount = 0;
     while (stableCount < this.strokes.length && this.strokes[stableCount].completed) stableCount++;
     // Only a completed, contiguous prefix can be cached. Later erasers must still
@@ -261,6 +360,13 @@ export class CanvasBoard {
       && this.cachedPrefix.every((cached, i) => sameInk(cached, this.strokes[i]));
     diagnostics?.record('prefixCompareMs', performance.now()-compareStarted);
     if (!prefixMatches) {
+      const previousPrefix = this.cachedPrefix;
+      if (previousPrefix.length) {
+        let affected: InkBounds | null = null;
+        for (const stroke of previousPrefix) affected = unionBounds(affected, strokeBounds(stroke));
+        for (let i = 0; i < stableCount; i++) affected = unionBounds(affected, strokeBounds(this.strokes[i]));
+        if (affected) dirty.push(affected);
+      }
       this.cacheContext.setTransform(1, 0, 0, 1, 0, 0);
       this.cacheContext.clearRect(0, 0, this.cache.width, this.cache.height);
       this.cachedPrefix = [];
@@ -268,21 +374,101 @@ export class CanvasBoard {
     this.cacheContext.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     for (let i = this.cachedPrefix.length; i < stableCount; i++) {
       const stroke = this.strokes[i];
-      drawStroke(this.cacheContext, stroke);
+      drawStroke(this.cacheContext, stroke, this.pathFor(stroke));
       // An ink snapshot also detects replacement snapshots and in-place edits.
       this.cachedPrefix.push({ ...stroke, points: stroke.points.map(point => ({ ...point })) });
     }
-    this.context.setTransform(1, 0, 0, 1, 0, 0);
-    const copyStarted = diagnostics ? performance.now() : 0;
-    this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    this.context.globalCompositeOperation = 'source-over';
-    this.context.drawImage(this.cache, 0, 0);
-    diagnostics?.record('surfaceCopyMs', performance.now()-copyStarted);
-    this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    const replayStarted = diagnostics ? performance.now() : 0;
-    for (let i = stableCount; i < this.strokes.length; i++) drawStroke(this.context, this.strokes[i]);
-    diagnostics?.record('tailReplayMs', performance.now()-replayStarted);
+    // A long completed brush run can be rasterized once and inserted at its
+    // original position between live operations. Eraser runs stay on the
+    // ordered path replay so destination-out remains deterministic.
+    let cacheStart = -1, cacheEnd = -1;
+    for (let i = stableCount; i < this.strokes.length;) {
+      if (!this.strokes[i].completed || this.strokes[i].tool !== 'brush') { i++; continue; }
+      const start = i;
+      while (i < this.strokes.length && this.strokes[i].completed && this.strokes[i].tool === 'brush') i++;
+      if (i - start > cacheEnd - cacheStart) { cacheStart = start; cacheEnd = i; }
+    }
+    const canCacheTail = cacheStart >= 0 && cacheEnd - cacheStart >= 8;
+    if (!canCacheTail) {
+      this.cachedTail = [];
+    } else {
+      const tail = this.strokes.slice(cacheStart, cacheEnd);
+      const tailMatches = this.cachedTail.length === tail.length
+        && this.cachedTail.every((cached, i) => sameInk(cached, tail[i]));
+      if (!tailMatches) {
+        this.tailCacheContext.setTransform(1, 0, 0, 1, 0, 0);
+        this.tailCacheContext.clearRect(0, 0, this.tailCache.width, this.tailCache.height);
+        this.tailCacheContext.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+        for (const stroke of tail) drawStroke(this.tailCacheContext, stroke, this.pathFor(stroke));
+        this.cachedTail = tail.map(stroke => ({ ...stroke, points: stroke.points.map(point => ({ ...point })) }));
+      }
+    }
+    const fullBoard: InkBounds = { left: 0, top: 0, right: BOARD_WIDTH, bottom: BOARD_HEIGHT };
+    const regions = this.fullRepaint ? [fullBoard] : mergeBounds(dirty.map(bounds => clampBounds(expandBounds(bounds, 1))));
+    let copyMs = 0, replayMs = 0;
+    let repaintArea = 0;
+    for (const region of regions) {
+      const left = Math.floor(region.left * this.dpr);
+      const top = Math.floor(region.top * this.dpr);
+      const right = Math.ceil(region.right * this.dpr);
+      const bottom = Math.ceil(region.bottom * this.dpr);
+      if (right <= left || bottom <= top) continue;
+      repaintArea += (right - left) * (bottom - top);
+      this.context.save();
+      this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      this.context.beginPath();
+      this.context.rect(left / this.dpr, top / this.dpr, (right - left) / this.dpr, (bottom - top) / this.dpr);
+      this.context.clip();
+      this.context.setTransform(1, 0, 0, 1, 0, 0);
+      const regionCopyStarted = diagnostics ? performance.now() : 0;
+      this.context.clearRect(left, top, right - left, bottom - top);
+      this.context.globalCompositeOperation = 'source-over';
+      this.context.drawImage(this.cache, left, top, right - left, bottom - top, left, top, right - left, bottom - top);
+      if (diagnostics) copyMs += performance.now() - regionCopyStarted;
+      this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      const regionReplayStarted = diagnostics ? performance.now() : 0;
+      for (let i = stableCount; i < this.strokes.length; i++) {
+        if (canCacheTail && i === cacheStart) {
+          this.context.globalCompositeOperation = 'source-over';
+          this.context.setTransform(1, 0, 0, 1, 0, 0);
+          this.context.drawImage(this.tailCache, left, top, right - left, bottom - top, left, top, right - left, bottom - top);
+          this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+          i = cacheEnd - 1;
+          continue;
+        }
+        const stroke = this.strokes[i];
+        const bounds = strokeBounds(stroke);
+        if (bounds && intersects(bounds, region)) drawStroke(this.context, stroke, this.pathFor(stroke));
+      }
+      if (diagnostics) replayMs += performance.now() - regionReplayStarted;
+      this.context.restore();
+    }
+    this.fullRepaint = false;
+    diagnostics?.record('surfaceCopyMs', copyMs);
+    diagnostics?.record('repaintAreaPx', repaintArea);
+    diagnostics?.record('tailReplayMs', replayMs);
+    this.renderedInk.clear();
+    for (const stroke of this.strokes) {
+      const bounds = strokeBounds(stroke);
+      if (bounds) this.renderedInk.set(stroke.id, { stroke: { ...stroke, points: stroke.points.map(point => ({ ...point })) }, bounds });
+    }
     diagnostics?.record('renderMs', performance.now()-started);
     diagnostics?.painted();
+  }
+
+  private pathFor(stroke: Stroke): Path2D | undefined {
+    if (!stroke.completed || typeof Path2D === 'undefined' || !stroke.points.length) return undefined;
+    const cached = this.paths.get(stroke.id);
+    if (cached && sameInk(cached.stroke, stroke)) return cached.path;
+    const path = new Path2D();
+    const first = stroke.points[0];
+    if (stroke.points.length === 1) {
+      path.arc(first.x, first.y, stroke.width / 2, 0, Math.PI * 2);
+    } else {
+      path.moveTo(first.x, first.y);
+      for (let i = 1; i < stroke.points.length; i++) path.lineTo(stroke.points[i].x, stroke.points[i].y);
+    }
+    this.paths.set(stroke.id, { stroke: { ...stroke, points: stroke.points.map(point => ({ ...point })) }, path });
+    return path;
   }
 }

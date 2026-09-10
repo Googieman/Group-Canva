@@ -27,7 +27,7 @@ The visible canvas is a transparent ink surface on a separate CSS background. Br
 
 Input is visible immediately through local prediction. Server echoes replace provisional order and contribute authoritative points; the renderer merges a pending stroke's point tail with the authoritative prefix by stroke ID, never draws two copies. Completion removes its prediction. Pointer cancellation removes local pending input and asks the server to cancel the unfinished operation.
 
-Canvas rendering uses one dirty `requestAnimationFrame`. Stable prefixes are cached; when an earlier operation changes, replay begins at the invalidated prefix. A changing unfinished stroke can require replay of later operations, including erasers. Remote cursors are lightweight DOM elements over the board; cursor movement does not redraw ink. Their percentage coordinates use the same logical board bounds, and stale indicators expire.
+Canvas rendering uses one dirty `requestAnimationFrame`. Stable completed prefixes are cached, and updates repaint only dirty logical regions from that prefix before replaying later operations in begin order. A changing unfinished stroke can require replay of later operations, including erasers. Long contiguous runs of completed brush strokes in the live tail are rasterized once into a reusable image; erasers and short or mixed runs remain ordered operations so `destination-out` compositing is deterministic. Cached paths and rasters are invalidated by geometry/style changes, removals, history changes, and device-pixel-ratio changes. Remote cursors are lightweight DOM elements over the board; cursor movement does not redraw ink. Their percentage coordinates use the same logical board bounds, and stale indicators expire.
 
 ## Wire contract
 
@@ -65,7 +65,7 @@ No pixel subtraction or inverse eraser is needed: history changes invalidate a c
 
 Socket.io preserves ordering during a connection, but disconnections require application-level recovery; its default delivery semantics do not restore missed events. See [Socket.io delivery guarantees](https://socket.io/docs/v4/delivery-guarantees/).
 
-The client does not enable drawing until a snapshot is hydrated. Reliable drawing events received during hydration are buffered. Snapshot hydration replaces authoritative state, discards events covered by the snapshot revision, then applies newer same-epoch events exactly once. A revision gap or unexpected epoch pauses input and requests a new snapshot. The buffer is bounded; overflow also forces resynchronization. A hydration timeout reconnects instead of waiting indefinitely.
+The client does not enable drawing until a snapshot is hydrated. The reducer can buffer reliable same-epoch events for direct recovery tests, while the Socket.io boundary drops drawing packets during connection or snapshot hydration because the authoritative snapshot covers that interval. Snapshot hydration replaces authoritative state, discards events covered by the snapshot revision, then applies newer same-epoch events exactly once. A revision gap or unexpected epoch pauses input and requests a new snapshot. The buffer is bounded; overflow also forces resynchronization. A hydration timeout reconnects instead of waiting indefinitely.
 
 Snapshots are constructed and emitted synchronously in the room's serialized event loop. Other room mutations occur before or after this snapshot boundary. The revision identifies that boundary even while other users continue drawing.
 
@@ -84,6 +84,7 @@ Browser origins use an exact allowlist. Origin checks are a browser cross-site p
 - Batched point messages (20 ms / 64 samples) bound per-message overhead and flush on release.
 - Input prediction hides network round-trip delay for the author; authoritative echoes settle ordering.
 - Immutable changed stroke objects let the canvas cache identify invalidation; unchanged prefixes avoid repeatedly rasterizing older history.
+- Dirty-region repaint and reusable long brush-run rasters reduce repeated full-surface and path work while preserving ordered eraser replay. Opt-in diagnostics report pointer-to-render, frame, batching, reducer, acknowledgement, and repaint metrics locally; they send no telemetry.
 - Cursor messages are throttled, volatile, and separate from drawing revisions.
 - Memory and history caps bound this MVP. Snapshot cost grows with stored points, so this is deliberately not an infinite archive.
 

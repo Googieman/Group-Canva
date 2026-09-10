@@ -5,6 +5,39 @@ const stroke: Stroke = { id:'s1',userId:'u1',tool:'brush',color:'#000000',width:
 const snapshot = (revision=0,epoch='a'): Snapshot => ({ epoch,revision,roomId:'playground',selfId:'u1',strokes:[],redoIds:[],users:[] });
 const begin = (revision=1): DrawingEvent => ({ epoch:'a',revision,change:{type:'stroke:begin',stroke} });
 describe('authoritative client state', () => {
+  it('keeps a newer-epoch event buffered when an older snapshot arrives', () => {
+    const state = new DrawingState(); state.hydrate(snapshot());
+    const future = {...begin(), epoch:'b'};
+    expect(state.receive(future)).toBe('resync');
+    expect(state.hydrate(snapshot())).toBe(false);
+    expect(state.ready).toBe(false);
+    expect(state.hydrate(snapshot(0,'b'))).toBe(true);
+    expect(state.epoch).toBe('b'); expect(state.revision).toBe(1);
+    expect(state.strokes.map(s => s.id)).toEqual(['s1']);
+  });
+  it('does not rewind a revision when a stale snapshot arrives', () => {
+    const state = new DrawingState(); state.hydrate(snapshot()); state.receive(begin());
+    expect(state.hydrate(snapshot())).toBe(false);
+    expect(state.revision).toBe(1); expect(state.strokes).toHaveLength(1);
+    expect(state.hydrate({...snapshot(1),strokes:[stroke]})).toBe(true);
+  });
+  it('requires a snapshot covering events lost to buffer overflow', () => {
+    const state = new DrawingState();
+    for (let revision=1; revision<=4096; revision++) state.receive(begin(revision));
+    expect(state.receive(begin(4097))).toBe('resync');
+    expect(state.hydrate(snapshot(4096))).toBe(false);
+    expect(state.ready).toBe(false);
+    expect(state.hydrate({...snapshot(4097),strokes:[stroke]})).toBe(true);
+    expect(state.revision).toBe(4097);
+  });
+  it('retains the tail behind a hydration gap for the next snapshot', () => {
+    const state = new DrawingState();
+    state.receive(begin(2));
+    state.receive({epoch:'a',revision:3,change:{type:'stroke:end',id:'s1',completionOrder:1}});
+    expect(state.hydrate(snapshot())).toBe(false);
+    expect(state.hydrate({...snapshot(2),strokes:[stroke]})).toBe(true);
+    expect(state.revision).toBe(3); expect(state.strokes[0].completed).toBe(true);
+  });
   it('buffers events during hydration and ignores snapshot-covered duplicates', () => {
     const state = new DrawingState(); state.receive(begin());
     expect(state.hydrate(snapshot())).toBe(true);

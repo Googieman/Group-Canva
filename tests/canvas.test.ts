@@ -33,10 +33,12 @@ class TestCanvas extends EventTarget {
   width = 0; height = 0; style: Record<string, string> = {};
   captures = new Set<number>();
   ops: { type: string; x?: number; mode?: string }[] = [];
+  clears: number[][] = [];
   ctx = {
     globalCompositeOperation: 'source-over', fillStyle: '', strokeStyle: '', lineWidth: 0,
     lineCap: '', lineJoin: '',
-    setTransform: vi.fn(), clearRect: () => this.ops.push({ type: 'clear' }),
+    setTransform: vi.fn(), clearRect: (...rect:number[]) => { this.clears.push(rect); this.ops.push({ type: 'clear' }); },
+    save() {}, restore() {}, rect() {}, clip() {},
     drawImage: () => this.ops.push({ type: 'image' }), beginPath() {},
     moveTo() {}, lineTo() {},
     arc: (x: number) => this.ops.push({ type: 'dot', x, mode: this.ctx.globalCompositeOperation }),

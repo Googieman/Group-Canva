@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { io, type Socket } from 'socket.io-client';
 import { createAppServer } from '../server/app.js';
 import type { ClientEvents, ServerEvents, Snapshot, DrawingEvent, Result, Command } from '../shared/protocol.js';
+import { DrawingState } from '../client/state';
 
 type Client = Socket<ServerEvents, ClientEvents>;
 const servers: Awaited<ReturnType<typeof createAppServer>>[] = [];
@@ -31,6 +32,39 @@ const begin = (id: string, x = 10) => ({ type: 'stroke:begin', id, tool: 'brush'
 async function complete(socket: Client, id: string) { expect(await command(socket, begin(id))).toEqual({ ok: true }); expect(await command(socket, { type: 'stroke:end', id })).toEqual({ ok: true }); }
 
 describe('authoritative websocket collaboration', () => {
+  it('converges overlapping brushes and eraser, reverse completion, late points and duplicate batches',async()=>{
+    const server=await start();
+    const peers=await Promise.all(Array.from({length:3},()=>connect(server.url)));
+    const states=peers.map(p=>{const s=new DrawingState();s.hydrate(p.snapshot);p.socket.on('drawing:event',e=>s.receive(e));return s;});
+    expect(await command(peers[0].socket,begin('lower',100))).toEqual({ok:true});
+    expect(await command(peers[1].socket,{...begin('erase',100),tool:'eraser',width:32})).toEqual({ok:true});
+    expect(await command(peers[2].socket,begin('upper',100))).toEqual({ok:true});
+    await command(peers[1].socket,{type:'stroke:end',id:'erase'});
+    const late=await connect(server.url);
+    const lateState=new DrawingState();late.socket.on('drawing:event',e=>lateState.receive(e));
+    for(let tick=0;tick<20;tick++) {
+      await Promise.all([0,2].map(i=>command(peers[i].socket,{type:'stroke:points',id:i===0?'lower':'upper',offset:tick+1,points:[{x:100+tick,y:10}]})));
+    }
+    const duplicate={type:'stroke:points',id:'lower',offset:1,points:[{x:100,y:10}]};
+    expect(await command(peers[0].socket,duplicate)).toEqual({ok:true});
+    await command(peers[2].socket,{type:'stroke:end',id:'upper'});
+    await command(peers[0].socket,{type:'stroke:end',id:'lower'});
+    await command(peers[1].socket,{type:'history:undo'});
+    await command(peers[2].socket,{type:'history:undo'});
+    await command(peers[0].socket,{type:'history:redo'});
+    const authoritative=await resync(late.socket);
+    await expect.poll(()=>states.map(s=>s.revision)).toEqual(Array(3).fill(authoritative.revision));
+    expect(lateState.hydrate(late.snapshot)).toBe(true);
+    expect(lateState.revision).toBe(authoritative.revision);
+    for(const state of [...states,lateState]) {
+      expect(state.strokes).toEqual(authoritative.strokes);
+      expect(state.redoIds).toEqual(['lower']);
+    }
+    expect(authoritative.revision).toBe(49);
+    expect(authoritative.strokes.map(s=>[s.id,s.order,s.completionOrder,s.active])).toEqual([
+      ['lower',1,3,false],['erase',2,1,true],['upper',3,2,true],
+    ]);
+  });
   it('streams points before completion to three clients, including the author', async () => {
     const server = await start();
     const peers = await Promise.all(Array.from({ length: 3 }, () => connect(server.url)));
@@ -119,10 +153,13 @@ describe('authoritative websocket collaboration', () => {
     const server = await start();
     const peers = await Promise.all(Array.from({ length: 10 }, (_, i) => connect(server.url, 'load', `Artist ${i}`)));
     await Promise.all(peers.map((peer, i) => command(peer.socket, begin(`ten-${i}`))));
-    await Promise.all(peers.map((peer, i) => command(peer.socket, { type: 'stroke:points', id: `ten-${i}`, offset: 1, points: [{ x: 50, y: 50 }] })));
+    for(let tick=0;tick<40;tick++) {
+      const results=await Promise.all(peers.map((peer,i)=>command(peer.socket,{type:'stroke:points',id:`ten-${i}`,offset:1+tick,points:[{x:50+tick,y:50+i}]})));
+      expect(results.every(result=>result.ok)).toBe(true);
+    }
     await Promise.all(peers.map((peer, i) => command(peer.socket, { type: 'stroke:end', id: `ten-${i}` })));
     const snapshots = await Promise.all(peers.map(peer => resync(peer.socket)));
-    for (const state of snapshots) { expect(state.revision).toBe(30); expect(state.strokes).toEqual(snapshots[0]!.strokes); expect(state.users).toHaveLength(10); }
+    for (const state of snapshots) { expect(state.revision).toBe(420); expect(state.strokes).toEqual(snapshots[0]!.strokes); expect(state.users).toHaveLength(10); }
   });
 
   it('serves health and rejects untrusted websocket origins', async () => {

@@ -112,7 +112,14 @@ export async function createAppServer(options: ServerOptions = {}) {
     io.to(`canvas:${room.id}`).emit('cursor:update', { userId: socket.id, point: null });
     io.to(`canvas:${room.id}`).emit('presence:update', [...room.users.values()]);
     if (!room.users.size && !closing) {
-      room.expires = setTimeout(() => { totalPoints -= room.points; rooms.delete(room.id); }, limits.idleRoomMs);
+      clearTimeout(room.expires);
+      room.expires = setTimeout(() => {
+        if (!room.users.size && rooms.get(room.id) === room) {
+          totalPoints -= room.points;
+          rooms.delete(room.id);
+          delete room.expires;
+        }
+      }, limits.idleRoomMs);
       room.expires.unref();
     }
   }
