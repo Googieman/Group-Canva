@@ -49,6 +49,14 @@ Two exploratory fork runs went through the VS Code tunnel endpoint. They were no
 
 For a real two-device measurement, open the shared room with `&diagnostics=1` in both browsers, reset `window.canvasDiagnostics`, draw for a fixed interval, and save both reports with browser, device, location, network, commit, and scene size. The diagnostics are opt-in, bounded, local, and send no telemetry. Record the supplied endpoint only in local notes; the benchmark report intentionally omits it.
 
+## Hosted baseline readiness (unverified, 11 September 2026)
+
+No hosted baseline was recorded in this workspace. `README.md` states that no hosted demo has been created, `BENCH_SERVER_URL` was unset in the benchmark environment, and no deployed frontend origin or backend URL was supplied. There was also no separate collaborator device available for the required remote run. Accordingly, `benchmarks/results/hosted-same-machine.json` and `benchmarks/results/hosted-remote.json` were intentionally not created; there are no hosted p50/p95, delivery, FPS, or host-side `serverProcessingMs` values to report.
+
+The deployment configuration is ready for a future run: `render.yaml` specifies one Render Free Node service in Singapore, and the frontend instructions require a build-time `VITE_SERVER_URL` pointing to that service plus an exact Cloudflare Pages origin in backend `ALLOWED_ORIGINS`. The server is configured for Socket.IO's WebSocket transport. These are configuration facts only; this run did not verify a live HTTPS origin, origin acceptance, WebSocket upgrade, authentication interstitial behavior, cold start, or server-side processing.
+
+The missing prerequisites are a real deployed HTTPS backend/frontend pair with the exact frontend origin allowed by the backend, and access to a second collaborator device and its browser/network details. Once available, run the identical 60-second `BENCH_PHASE=load`, one-repetition command from the server machine and the separate device, retain both JSON reports, and collect `serverProcessingMs` on the backend host. The existing local and exploratory tunnel evidence above remains separate and must not be labeled as this hosted baseline.
+
 Remaining validation:
 
 - Run native Chrome, Firefox, and Safari on target devices; Playwright WebKit remains a compatibility signal rather than a Safari result.
