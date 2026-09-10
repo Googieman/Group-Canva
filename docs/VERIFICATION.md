@@ -92,4 +92,6 @@ Firefox was not part of this final matrix because its downloaded Playwright bina
 
 The rejected-cache post sample also included an unfinished-brush control at 16.53 FPS versus the earlier 60.05–60.09 FPS baseline. A fresh three-repetition no-cache control in `mixed-tail-no-cache-final.json` returned 60.16–60.21 FPS. The post run had one 3-second repetition and was collected while the experimental cache path was being evaluated; the control is therefore stronger rejection evidence but still not a pass/fail threshold. The accepted renderer remains the no-cache implementation.
 
+`mixed-tail-post.json` reported `tailCacheBytes` and `tailCacheTiles` as zero for every post scenario, so that historical run exercised the direct fallback rather than retaining cached tiles.
+
 The experimental cache source was never committed and is not retained as production code. The raw post JSON, no-cache reference, task reports, and review artifacts preserve the measurements and decision; reproducing the rejected implementation would require a new experiment.

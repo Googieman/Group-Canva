@@ -56,3 +56,5 @@ The proposed bounded mixed-tail tile operation cache was rejected. The genuine p
 The production renderer remains unchanged by Task 3. The independent `verifyMixedTailSequence` oracle remains in the browser suite, and the raw post and diagnostic JSON artifacts are retained for review. No tile backing storage or memory-cap claim is made for the rejected implementation.
 
 The rejected-cache post sample's unfinished-brush control was 16.53 FPS, versus the earlier 60.05–60.09 FPS baseline; the fresh three-repetition no-cache control was 60.16–60.21 FPS. This control strengthens rejection of the experimental cache, while the differing run conditions mean it remains evidence rather than a timing threshold. The experimental source was uncommitted and is not retained; only the raw measurements, reports, and decision remain.
+
+`mixed-tail-post.json` reported `tailCacheBytes` and `tailCacheTiles` as zero for every post scenario, so that historical run exercised the direct fallback rather than retaining cached tiles.
