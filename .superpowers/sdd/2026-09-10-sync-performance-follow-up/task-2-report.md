@@ -37,4 +37,4 @@ The benchmark JSON was captured from the working tree (`workingTreeDirty: true`)
 
 ## Commit
 
-Commit: `TO_BE_FILLED_AFTER_COMMIT`
+Commit: `96865620bb442f475e690e3a6b0b7c19ed2ebb2a`
