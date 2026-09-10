@@ -22,7 +22,7 @@ Task 2 baseline (three 5-second repetitions, Chromium, DPR 2) measured FPS range
 
 ## Validation and evidence
 
-The controller reports `npm test` and `npm run build` passing (45 tests/build). The mixed-tail browser oracle is retained for the next browser run; its existing 41-transition oracle is unchanged. No tile cache backing storage is retained, so there is no accepted memory-cap result to report. The proposed 64 MiB bound is therefore marked rejected rather than claimed.
+The controller reports `npm test` passing with 41 tests and `npm run build` passing. The mixed-tail browser oracle is retained for the next browser run; its existing 41-transition oracle is unchanged. No tile cache backing storage is retained, so there is no accepted memory-cap result to report. The proposed 64 MiB bound is therefore marked rejected rather than claimed.
 
 ## Concerns
 
@@ -30,4 +30,4 @@ The post sample is a same-machine Chromium measurement with one repetition and a
 
 ## Commit
 
-Package commit: `f2aee95` (`perf: cache mixed canvas tail operations`).
+Evidence/implementation commit: `f2aee95` (`perf: cache mixed canvas tail operations`). Package head: `77e960b`.
