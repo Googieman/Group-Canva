@@ -71,3 +71,21 @@ See [benchmarks/README.md](../benchmarks/README.md) for commands and metric defi
 The proposed tile operation cache was rejected after the genuine post sample in `benchmarks/results/mixed-tail-post.json` regressed the mixed scenarios to 14.0257, 15.1481, and 16.2760 FPS (eraser intervals 4, 7, and 16). The Task 2 baseline ranges were 15.67–16.00, 16.45–17.32, and 17.86–18.72 FPS respectively. The post run was one 3-second repetition, while the baseline was three 5-second repetitions, so these values are recorded as evidence and not a pass/fail performance gate.
 
 Task 3 leaves `client/canvas.ts` unchanged and removes the cache-specific unit tests. The 18-transition `verifyMixedTailSequence` browser oracle remains as independent correctness coverage. The raw post and Task 2 diagnostic JSON files are retained. No accepted cache implementation, memory-cap measurement, or performance improvement is claimed.
+
+## Follow-up final gate (11 September 2026)
+
+The final automated gate passed after rejecting the regressing tile cache:
+
+- `npm test`: **41 passed** across five files.
+- `npm run build`: **passed** (`tsc --noEmit`, Vite production build, and server TypeScript emit).
+- `git diff --check`: **passed**.
+- `$env:E2E_PORT=3111; npx playwright test tests/browser/compositing.spec.ts --project=chromium`: **6 passed**. This covers the 41-transition full oracle and the 18-transition mixed-tail oracle at DPR 1, 1.5, and 2.
+- `$env:E2E_PORT=3112; npx playwright test tests/browser/compositing.spec.ts --project=webkit`: **6 passed** at the same DPR values.
+- `$env:E2E_PORT=3113; npx playwright test tests/browser/whiteboard.spec.ts --project=chromium`: **2 passed**.
+- `$env:E2E_PORT=3114; npx playwright test tests/browser/whiteboard.spec.ts --project=webkit`: **2 passed**.
+
+`benchmarks/results/mixed-tail-no-cache-final.json` records a fresh three-repetition, five-second same-machine Chromium run after the cache was removed. At DPR 2, mixed-tail FPS ranges were 14.16–14.70 (eraser every 4), 15.30–15.78 (every 7), and 16.72–17.26 (every 16); `renderMs` p50 remained 1.6–7.2 ms and `tailReplayMs` p50 0.5–6.1 ms. This is a comparable no-cache reference for future work, not a performance threshold. The raw Task 2 baseline, rejected-cache post sample, and no-cache reference remain separate artifacts.
+
+The authoritative stream remains Socket.IO over WebSocket. Local and controlled-delay measurements show server processing below 1 ms while transport delay dominates when delay is introduced; no hosted evidence isolates a transport defect. A future unreliable cursor channel would require a separate design and is outside this follow-up.
+
+Firefox was not part of this final matrix because its downloaded Playwright binary previously failed to launch on Windows with `spawn UNKNOWN`. Playwright WebKit is a compatibility signal, not native Safari. A deployed HTTPS endpoint, exact frontend origin, cold-start run, host-side processing sample, and genuinely remote collaborator device are still unavailable and remain explicitly unverified above.
