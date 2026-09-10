@@ -6,29 +6,38 @@ import type { Stroke } from '../shared/protocol';
 const canvas = document.querySelector('canvas')!;
 const board = new CanvasBoard(canvas,{onBegin(){},onPoints(){},onEnd(){},onCancel(){},onCursor(){}});
 const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(()=>resolve()));
-function stroke(i:number, points:number, completed:boolean, allBrush=false): Stroke {
-  return {id:`s${i}`,userId:'fixture',tool:allBrush?'brush':i%7===0?'eraser':'brush',color:'#5446d4',width:6,
+function stroke(i:number, points:number, completed:boolean, allBrush=false, eraserEvery=7, oneBasedEraser=false): Stroke {
+  const eraser = oneBasedEraser ? (i + 1) % eraserEvery === 0 : i % eraserEvery === 0;
+  return {id:`s${i}`,userId:'fixture',tool:allBrush?'brush':eraser?'eraser':'brush',color:'#5446d4',width:6,
     order:i+1,completed,completionOrder:completed?i+1:null,active:true,
     points:Array.from({length:points},(_,p)=>({x:((p*2+i*19)%1500)+50,y:300+Math.sin(p*.08+i)*120}))};
 }
 async function run(scenario:string, durationMs:number) {
   const allBrush=scenario==='unfinished-brush-prefix';
-  let strokes = scenario==='empty' ? [] : Array.from({length:300},(_,i)=>stroke(i,120,true,allBrush));
-  if(scenario==='unfinished-prefix'||allBrush) strokes[0]={...strokes[0],completed:false,completionOrder:null};
-  let live=stroke(300,1,false,allBrush);strokes.push(live);board.setStrokes(strokes);
+  const mixedMatch = /^mixed-tail-eraser-(4|7|16)$/.exec(scenario);
+  const eraserEvery = mixedMatch ? Number(mixedMatch[1]) : 7;
+  const oneBasedEraser = Boolean(mixedMatch);
+  const unfinishedEarly = scenario==='unfinished-prefix'||allBrush||Boolean(mixedMatch);
+  let strokes = scenario==='empty' ? [] : Array.from({length:300},(_,i)=>stroke(i,120,true,allBrush,eraserEvery,oneBasedEraser));
+  if(unfinishedEarly) strokes[0]={...strokes[0],completed:false,completionOrder:null};
+  if(mixedMatch) strokes[0]={...strokes[0],tool:'brush'};
+  // Keep the appended operation live and brush-shaped in every mixed-tail
+  // interval so its updates exercise ordered replay around the fixture's
+  // erasers rather than changing the workload's operation type.
+  let live={...stroke(300,1,false,allBrush,eraserEvery,oneBasedEraser),tool:'brush' as const};strokes.push(live);board.setStrokes(strokes);
   await nextFrame();await nextFrame();diagnostics!.reset();
   const started=performance.now();let updates=0;
   while(performance.now()-started<durationMs) {
     const t=performance.now();
     live={...live,points:[...live.points,{x:50+(updates*3)%1500,y:300+Math.sin(updates*.1)*150}]};
-    if(scenario==='unfinished-prefix'||allBrush) {
+    if(unfinishedEarly) {
       const first=strokes[0];strokes[0]={...first,points:[...first.points,{x:50+updates%1500,y:400}]};
     }
     strokes[strokes.length-1]=live;
     diagnostics!.input(t);board.setStrokes([...strokes]);updates++;
     await nextFrame();
   }
-  await nextFrame();return {scenario,updates,...diagnostics!.report(),backing:{width:canvas.width,height:canvas.height}};
+  await nextFrame();return {scenario,eraserEvery:mixedMatch?eraserEvery:null,updates,...diagnostics!.report(),backing:{width:canvas.width,height:canvas.height}};
 }
 Object.assign(window,{runCanvasBenchmark:run});
 
@@ -84,6 +93,11 @@ async function verifySequence() {
   // Snapshot replaces interior points in place; removal/cancellation; provisional order settles.
   lower.points[1].y=470;await check([lower,eraser,upper]);
   await check([lower,upper]);upper={...upper,order:0};await check([lower,upper]);
+  // Reorder across the still-present eraser, then restore the operation's
+  // original visual position. This exercises begin-order replay independent
+  // of completion order and proves the eraser is not moved by history state.
+  upper={...upper,order:3};await check([lower,eraser,upper]);
+  upper={...upper,order:0};await check([lower,eraser,upper]);
   await check([]);
   lower={...lower,completed:false,points:[{x:0,y:0}],width:63};
   eraser={...eraser,points:[{x:70.5,y:0},{x:70.5,y:180}]};
@@ -100,6 +114,9 @@ async function verifySequence() {
   let trailingEraser: Stroke={...stroke(130,2,false),id:'trailing-eraser',order:110,tool:'eraser',points:[{x:520,y:600},{x:520,y:760}]};
   await check([live,...tail,trailingEraser]);
   live={...live,points:[...live.points,{x:360,y:640}]};await check([live,...tail,trailingEraser]);
+  // Invalidate the cached brush run itself while preserving the later eraser.
+  // The full replay remains the delivery-independent oracle for this change.
+  tail[4]={...tail[4],points:[...tail[4].points,{x:420,y:700}]};await check([live,...tail,trailingEraser]);
   trailingEraser={...trailingEraser,completed:true,completionOrder:40};await check([live,...tail,trailingEraser]);
   return {checks,dpr:reference.width/1600};
 }

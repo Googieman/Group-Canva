@@ -47,7 +47,11 @@ try {
     const context=await browser.newContext({viewport:{width:1280,height:900},deviceScaleFactor:2});
     const page=await context.newPage();await page.goto(`${url}benchmarks/render.html?diagnostics=1`);
     await page.waitForFunction(()=>typeof (window as any).runCanvasBenchmark==='function');
-    for(const scenario of loadOnly?[]:['empty','completed-prefix','unfinished-prefix','unfinished-brush-prefix']) {
+    // Keep the original 300-stroke scenes and add an interval matrix for the
+    // mixed tail. The matrix uses the same five-second (or configured)
+    // duration and DPR 2 context for each repeat; diagnostics remain samples,
+    // with no timing threshold used as a pass/fail assertion.
+    for(const scenario of loadOnly?[]:['empty','completed-prefix','unfinished-prefix','unfinished-brush-prefix','mixed-tail-eraser-4','mixed-tail-eraser-7','mixed-tail-eraser-16']) {
       const result=await page.evaluate(({scenario,duration})=>(window as any).runCanvasBenchmark(scenario,duration),{scenario,duration});
       renders.push({rep,...result});console.log(JSON.stringify({phase:'renderer',rep,scenario,fps:result.fps,render:result.metrics.renderMs}));
     }

@@ -31,6 +31,20 @@ The independent reviewer reproduced the three reducer failures, supplied their r
 
 Regional repaint reconstructs affected ink from the stable completed prefix and every intersecting later operation, in begin order. A contiguous run of at least eight completed brush strokes in the live tail is rasterized once into a reusable tail image; erasers and short runs continue through the ordered replay path so destination-out remains deterministic. The tail image is inserted at its original position and is never moved ahead of an eraser or an unfinished operation. Changed geometry, removed operations, history changes, reordered predictions, and DPR changes invalidate the relevant image.
 
-Browser compositing tests compare incremental rendering against an independent full replay over 38 transitions at DPR 1, 1.5, and 2. They require matching alpha and interior pixels, allowing only one-channel rounding from cached transparent brush rasters and a one-device-pixel neighborhood of a reference edge where clipping affects antialias coverage. This verifies compositing semantics without claiming byte-identical raster edges across repaint paths or browser engines. Native Safari and real remote collaboration remain separate validation scenarios.
+### Mixed-tail performance sample
+
+`benchmarks/results/mixed-tail-baseline.json` records three 5-second repetitions per scenario in Chromium 153 at DPR 2 on the same Windows machine. Each 300-stroke mixed fixture updates both an early unfinished brush and an appended live brush. The values below are the ranges of each repetition's p50 or p95, so they remain performance observations rather than pass/fail thresholds.
+
+| Eraser interval | Updates / 5 s | FPS | `renderMs` p50 / p95 | `tailReplayMs` p50 / p95 | `surfaceCopyMs` p50 / p95 | `prefixCompareMs` p50 / p95 | `repaintAreaPx` p50 / p95 | `frameIntervalMs` p50 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Every 4 strokes | 79–80 | 15.67–16.00 | 1.5–1.6 / 1.9–3.3 | 0.5 / 0.7 | 0 / 0.1 | 0.4 / 0.5 | 1,343,296 / 1,488,256 | 66.6 |
+| Every 7 strokes | 83–87 | 16.45–17.32 | 1.6 / 2.4–3.3 | 0.5 / 0.7 | 0 / 0.1 | 0.4–0.5 / 0.8 | 1,357,792–1,427,856 / 1,488,256 | 50.1–66.6 |
+| Every 16 strokes | 90–94 | 17.86–18.72 | 7.1–7.5 / 8.6–9.3 | 6.0–6.4 / 6.7–7.8 | 0 / 0.1 | 0.4 / 0.5–0.6 | 1,454,432–1,485,840 / 1,488,256 | 50.0 |
+
+The measured bottleneck is main-thread/frame scheduling: the 50–67 ms median frame intervals and 53–63 ms median pointer-to-render delays are much larger than the 1.5–7.5 ms median `renderMs`. Dirty-region comparison and stable-surface copying are not the limiting components. The every-16 case also exposes a synchronous replay hotspot: its reusable tail image raises median `tailReplayMs` from 0.5 ms to 6.0–6.4 ms and accounts for most of its measured render time. Deferred Canvas rasterization may contribute to the scheduling gap, but these component timers do not isolate it from browser frame scheduling, so the baseline does not justify attributing that gap to path submission or rasterization alone.
+
+### Functional compositing oracle
+
+Browser compositing tests compare incremental rendering against an independent full replay over 41 transitions at DPR 1, 1.5, and 2. The sequence covers late lower points beneath a later eraser, completion and history changes, eraser removal, begin-order reordering across an eraser, and mutation of a cached brush run before a later eraser. It requires matching alpha and interior pixels, allowing only one-channel rounding from cached transparent brush rasters and a one-device-pixel neighborhood of a reference edge where clipping affects antialias coverage. This verifies compositing semantics without turning the performance observations above into functional assertions or claiming byte-identical raster edges across repaint paths or browser engines. Native Safari and real remote collaboration remain separate validation scenarios.
 
 See [VERIFICATION.md](VERIFICATION.md) for final command results, measurements, and remaining limitations.

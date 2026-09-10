@@ -8,5 +8,5 @@ for(const dpr of [1,1.5,2])test(`incremental compositing matches full replay at 
   await page.goto(`${url}benchmarks/render.html`);
   await page.waitForFunction(()=>typeof (window as any).verifyCanvasSequence==='function');
   const result=await page.evaluate(()=>(window as any).verifyCanvasSequence());
-  expect(result).toEqual({checks:38,dpr});await context.close();
+  expect(result).toEqual({checks:41,dpr});await context.close();
 });
