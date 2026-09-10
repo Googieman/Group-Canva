@@ -17,7 +17,7 @@ The historical renderer is loaded from the existing Git commit, with the current
 
 The default performs three repetitions of:
 
-1. Eight seconds per renderer scene: empty history, a completed prefix, a mixed brush/eraser 36,000-point history with its first operation unfinished, and an all-brush history with a long completed tail. A growing live stroke is appended once per animation frame; unfinished scenes also append to the first operation. This measures sustainable rendering throughput, with the number of updates recorded, rather than imposing a fixed hardware pointer rate.
+1. Eight seconds per renderer scene: the four original scenes (empty history, a completed prefix, a mixed brush/eraser 36,000-point history with its first operation unfinished, and an all-brush history with a long completed tail), plus the mixed-tail scene with eraser intervals of 4, 7, and 16. A growing live stroke is appended once per animation frame; unfinished scenes also append to the first operation. This measures sustainable rendering throughput, with the number of updates recorded, rather than imposing a fixed hardware pointer rate.
 2. Eight seconds of Playwright mouse input through the actual application and prediction/batching path.
 3. Eight seconds with ten clients in one unique room: five concurrent authors, one rendered browser, and four additional socket observers. Each author requests two-point batches every 20 ms. Actual scheduling intervals and received batch counts are recorded.
 

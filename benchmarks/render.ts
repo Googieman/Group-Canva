@@ -61,9 +61,9 @@ async function verifySequence() {
     let mismatches=0;const examples:unknown[]=[];
     // Canvas engines can change edge coverage when clipping a path. Require
     // exact interiors and confine any raster differences to a one-pixel edge
-    // neighborhood. A cached transparent raster can quantize an opaque brush
-    // color by one channel value in WebKit; that bounded rounding is allowed,
-    // while alpha and eraser interiors must remain exactly clear.
+    // neighborhood. Browser rasterization can quantize an opaque brush color
+    // by one channel value in WebKit; that bounded rounding is allowed, while
+    // alpha and eraser interiors must remain exactly clear.
     for(let i=0;i<actual.length;i+=4) {
       if(actual.slice(i,i+4).every((v,c)=>v===expected[i+c]))continue;
       if(actual[i+3]===expected[i+3] && [0,1,2].every(c=>Math.abs(actual[i+c]-expected[i+c])<=1))continue;
@@ -105,16 +105,15 @@ async function verifySequence() {
     lower={...lower,points:[...lower.points,{x:i*13.37,y:40+Math.sin(i*.73)*35}]};
     await check([lower,eraser]);
   }
-  // Long completed brush runs are rasterized as one cached operation between
-  // live strokes. Keep a later eraser in the sequence to prove the cache is
-  // inserted at its original visual position.
+  // Render a long completed brush run with a later eraser in its original
+  // visual position, alongside live strokes.
   let live={...stroke(90,1,false,true),id:'live',order:90,points:[{x:180,y:650},{x:280,y:650}]};
   const tail=Array.from({length:12},(_,i)=>({...stroke(100+i,3,true,true),id:`tail-${i}`,order:91+i,completionOrder:20+i,
     points:[{x:300+i*12,y:620},{x:480+i*12,y:680}]}));
   let trailingEraser: Stroke={...stroke(130,2,false),id:'trailing-eraser',order:110,tool:'eraser',points:[{x:520,y:600},{x:520,y:760}]};
   await check([live,...tail,trailingEraser]);
   live={...live,points:[...live.points,{x:360,y:640}]};await check([live,...tail,trailingEraser]);
-  // Invalidate the cached brush run itself while preserving the later eraser.
+  // Change a completed brush operation while preserving the later eraser.
   // The full replay remains the delivery-independent oracle for this change.
   tail[4]={...tail[4],points:[...tail[4].points,{x:420,y:700}]};await check([live,...tail,trailingEraser]);
   trailingEraser={...trailingEraser,completed:true,completionOrder:40};await check([live,...tail,trailingEraser]);
@@ -122,9 +121,9 @@ async function verifySequence() {
 }
 Object.assign(window,{verifyCanvasSequence:verifySequence});
 
-// A separate mixed-tail regression keeps the cache path under the same
-// independent full-replay oracle while changing live, history, and order
-// state around both brush and eraser operations.
+// A separate mixed-tail regression checks direct ordered rendering against an
+// independent full-replay oracle while changing live, history, and order state
+// around both brush and eraser operations.
 async function verifyMixedTailSequence() {
   const reference=document.createElement('canvas');reference.width=canvas.width;reference.height=canvas.height;
   const ctx=reference.getContext('2d')!;let checks=0;
@@ -156,9 +155,9 @@ async function verifyMixedTailSequence() {
     if(mismatches)throw new Error(`Mixed-tail replay mismatch at step ${checks}: ${mismatches} pixels ${JSON.stringify(examples)}`);checks++;
   };
   const make=(id:string,order:number,tool:'brush'|'eraser',completed=true):Stroke=>{
-    // Completed operations occupy distinct tiles so Chromium exercises real
-    // cached brush images and eraser masks. The unfinished and live strokes
-    // deliberately overlap the two eraser slots while remaining direct.
+    // Completed operations occupy distinct tiles so the oracle exercises
+    // ordered brush and eraser rendering. The unfinished and live strokes
+    // deliberately overlap the two eraser slots.
     const slot=order===1?4:order===30?9:order-2;
     const x=(slot%6)*256,y=Math.floor(slot/6)*256;
     return {id,order,tool,color:tool==='eraser'?'#111111':'#4a35c5',width:tool==='eraser'?36:10,
