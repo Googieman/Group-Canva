@@ -18,6 +18,12 @@ interface Callbacks {
   hostSave?(watermark: { epoch: string; revision: number } | null): void;
 }
 interface ConnectionOptions { host?: boolean; hostCapability?: string }
+export function resolveSocketEndpoint(): string | undefined {
+  const configuredServerUrl = import.meta.env.VITE_SERVER_URL?.trim();
+  if (configuredServerUrl) return configuredServerUrl;
+  if (typeof window !== 'undefined' && window.location.hostname === 'group-canva.pages.dev') return 'https://group-canvas.onrender.com';
+  return typeof window !== 'undefined' ? window.location.origin : undefined;
+}
 export class Connection {
   private socket: Socket<ServerEvents, ClientEvents>;
   private resyncPending = false;
@@ -31,11 +37,7 @@ export class Connection {
   private roomPaused = false;
   private assetToken: string | undefined;
   constructor(readonly state: DrawingState, private readonly roomId: string, private readonly name: string, private callbacks: Callbacks, private readonly options: ConnectionOptions = {}) {
-    const configuredServerUrl = import.meta.env.VITE_SERVER_URL?.trim();
-    const hostedDemoUrl = typeof window !== 'undefined' && window.location.hostname === 'group-canva.pages.dev'
-      ? 'https://group-canvas.onrender.com'
-      : undefined;
-    this.socket = io(configuredServerUrl || hostedDemoUrl || undefined, {
+    this.socket = io(resolveSocketEndpoint(), {
       transports:['websocket'],autoConnect:false,reconnection:true,reconnectionDelay:500,
       reconnectionDelayMax:8000,randomizationFactor:0.5,timeout:20000,
     });
@@ -143,9 +145,7 @@ export class Connection {
 
   async uploadAsset(asset: { id: string; mimeType: string; bytes: ArrayBuffer }): Promise<Result> {
     if (!this.assetToken) return { ok: false, error: 'The room asset credential is not ready.' };
-    const configuredServerUrl = import.meta.env.VITE_SERVER_URL?.trim();
-    const hostedDemoUrl = typeof window !== 'undefined' && window.location.hostname === 'group-canva.pages.dev' ? 'https://group-canvas.onrender.com' : undefined;
-    const base = configuredServerUrl || hostedDemoUrl || (typeof window !== 'undefined' ? window.location.origin : '');
+    const base = resolveSocketEndpoint() || '';
     try {
       const response = await fetch(`${base}/api/rooms/${encodeURIComponent(this.roomId)}/assets`, { method: 'POST', headers: { 'content-type': asset.mimeType, 'x-room-token': this.assetToken, 'x-asset-id': asset.id }, body: asset.bytes });
       if (!response.ok) { const value = await response.json().catch(() => ({})) as { error?: string }; return { ok: false, error: value.error ?? 'The image could not be uploaded.' }; }
@@ -155,9 +155,7 @@ export class Connection {
 
   async downloadAsset(assetId: string): Promise<ArrayBuffer | undefined> {
     if (!this.assetToken) return undefined;
-    const configuredServerUrl = import.meta.env.VITE_SERVER_URL?.trim();
-    const hostedDemoUrl = typeof window !== 'undefined' && window.location.hostname === 'group-canva.pages.dev' ? 'https://group-canvas.onrender.com' : undefined;
-    const base = configuredServerUrl || hostedDemoUrl || (typeof window !== 'undefined' ? window.location.origin : '');
+    const base = resolveSocketEndpoint() || '';
     try {
       const response = await fetch(`${base}/api/rooms/${encodeURIComponent(this.roomId)}/assets/${encodeURIComponent(assetId)}`, { headers: { 'x-room-token': this.assetToken } });
       return response.ok ? await response.arrayBuffer() : undefined;

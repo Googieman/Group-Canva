@@ -8,7 +8,7 @@ const servers: Awaited<ReturnType<typeof createAppServer>>[] = [];
 const connections: Connection[] = [];
 afterEach(async () => {
   connections.splice(0).forEach(c => c.destroy());
-  await Promise.all(servers.splice(0).map(s => s.close())); vi.unstubAllEnvs();
+  await Promise.all(servers.splice(0).map(s => s.close())); vi.unstubAllEnvs(); vi.unstubAllGlobals();
 });
 async function setup() {
   const server = await createAppServer({host:'127.0.0.1'}); servers.push(server);
@@ -66,4 +66,14 @@ it('ignores a failed acknowledgement from before a successful resynchronization'
   peer.emit('room:snapshot',snapshots[0]);
   await expect.poll(()=>snapshots.length).toBe(3);
   expect(state.ready).toBe(true); expect(callbacks.error).not.toHaveBeenCalled();
+});
+it('hydrates from the current page origin when no server URL is configured', async () => {
+  const server = await createAppServer({ host: '127.0.0.1' }); servers.push(server);
+  vi.stubEnv('VITE_SERVER_URL', '');
+  vi.stubGlobal('window', { location: { origin: server.url, hostname: '127.0.0.1' } });
+  const state = new DrawingState();
+  const callbacks = { status: vi.fn(), snapshot: vi.fn(), drawing: vi.fn(), users: vi.fn(), cursor: vi.fn(), error: vi.fn() };
+  const connection = new Connection(state, 'same-origin-network-test', 'Tester', callbacks); connections.push(connection);
+  await expect.poll(() => state.ready, { timeout: 5000 }).toBe(true);
+  expect(callbacks.snapshot).toHaveBeenCalled();
 });

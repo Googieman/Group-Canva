@@ -24,7 +24,7 @@ export interface LocalFile {
 interface StoredFile extends Omit<LocalFile, 'assets'> { }
 interface DBStoredAsset extends StoredAsset { fileId: string }
 interface StorageOptions { dbName?: string; forceMemory?: boolean; indexedDB?: IDBFactory }
-export interface WriterLease { readOnly: boolean; release(): void }
+export interface WriterLease { readOnly: boolean; reason: string; release(): void }
 
 const memoryFiles = new Map<string, LocalFile>();
 const memoryAssets = new Map<string, DBStoredAsset>();
@@ -58,27 +58,27 @@ export class CanvasStorage {
         resolveAcquired(true);
         return held;
       }).catch(() => resolveAcquired(false));
-      if (await acquiredResult && acquired) return { readOnly: false, release: () => releaseLock() };
-      return { readOnly: true, release: () => {} };
+      if (await acquiredResult && acquired) return { readOnly: false, reason: '', release: () => releaseLock() };
+      return { readOnly: true, reason: 'Read-only · another tab is editing', release: () => {} };
     }
     const key = `group-canvas-writer:${fileId}`;
     const owner = randomId('writer');
     const now = Date.now();
-    if (memoryWriters.has(fileId)) return { readOnly: true, release: () => {} };
+    if (memoryWriters.has(fileId)) return { readOnly: true, reason: 'Read-only · another tab is editing', release: () => {} };
     memoryWriters.set(fileId, owner);
     try {
       const current = typeof localStorage === 'undefined' ? null : localStorage.getItem(key);
       const parsed = current ? JSON.parse(current) as { owner?: string; expiresAt?: number } : undefined;
-      if (parsed?.owner && (parsed.expiresAt ?? 0) > now) { memoryWriters.delete(fileId); return { readOnly: true, release: () => {} }; }
+      if (parsed?.owner && (parsed.expiresAt ?? 0) > now) { memoryWriters.delete(fileId); return { readOnly: true, reason: 'Read-only · another tab is editing', release: () => {} }; }
       const record = { owner, expiresAt: now + 15_000 };
       localStorage.setItem(key, JSON.stringify(record));
-      if (localStorage.getItem(key) !== JSON.stringify(record)) { memoryWriters.delete(fileId); return { readOnly: true, release: () => {} }; }
+      if (localStorage.getItem(key) !== JSON.stringify(record)) { memoryWriters.delete(fileId); return { readOnly: true, reason: 'Read-only · another tab is editing', release: () => {} }; }
       const heartbeat = setInterval(() => { try { const latest = localStorage.getItem(key); if (latest?.includes(`\"owner\":\"${owner}\"`)) localStorage.setItem(key, JSON.stringify({ owner, expiresAt: Date.now() + 15_000 })); } catch { /* storage can disappear during page lifetime */ } }, 5_000);
       const release = () => { clearInterval(heartbeat); if (memoryWriters.get(fileId) === owner) memoryWriters.delete(fileId); try { const latest = localStorage.getItem(key); if (latest?.includes(`\"owner\":\"${owner}\"`)) localStorage.removeItem(key); } catch { /* storage can disappear during page close */ } };
-      return { readOnly: false, release };
+      return { readOnly: false, reason: '', release };
     } catch {
       // Private browsing and disabled storage still permit a safe single-tab writer.
-      return { readOnly: false, release: () => { if (memoryWriters.get(fileId) === owner) memoryWriters.delete(fileId); } };
+      return { readOnly: false, reason: '', release: () => { if (memoryWriters.get(fileId) === owner) memoryWriters.delete(fileId); } };
     }
   }
 

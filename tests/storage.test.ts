@@ -38,6 +38,8 @@ describe('local canvas storage', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     const third = await secondStorage.claimWriter('file-1');
     expect(third.readOnly).toBe(false);
+    expect(first.reason).toBe('');
+    expect(second.reason).toBe('Read-only · another tab is editing');
     third.release();
   });
 });

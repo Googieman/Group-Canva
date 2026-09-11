@@ -15,6 +15,12 @@ async function path(page:Page,start=[.3,.45],end=[.65,.55],release=true) {
   await page.mouse.move(box.x+box.width*end[0],box.y+box.height*end[1],{steps:12});
   if(release)await page.mouse.up();
 }
+test('shared-room startup reaches Live together', async ({ page }) => {
+  await page.goto(`/?room=smoke-${Date.now()}`);
+  await expect(page.getByText('Live together', { exact: true })).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText('Connecting…', { exact: true })).not.toBeVisible();
+  await expect(page.locator('canvas')).toHaveAttribute('aria-disabled', 'false');
+});
 test('three canvases stream live strokes, erase, globally undo and redo, and hydrate late join',async({browser},testInfo)=>{
   const context=await browser.newContext({viewport:{width:1440,height:960}});
   const pages=await Promise.all([context.newPage(),context.newPage(),context.newPage()]);
