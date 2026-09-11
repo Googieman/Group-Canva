@@ -19,20 +19,27 @@ export function hitTestObject(point: Point, object: CanvasObject, tolerance = 6)
     for (let index = 0; index < object.points.length; index++) {
       const current = object.points[index]!;
       if (index === 0 && Math.hypot(local.x - current.x, local.y - current.y) <= radius) return true;
-      const previous = object.points[index - 1]!;
-      if (distanceToSegment(local, previous, current) <= radius) return true;
+      if (index > 0) {
+        const previous = object.points[index - 1]!;
+        if (distanceToSegment(local, previous, current) <= radius) return true;
+      }
     }
     return false;
   }
   const height = object.type === 'text' ? Math.max(1, object.text.split('\n').length) * object.fontSize * object.lineHeight : object.height;
+  if (object.type === 'shape' && (object.shape === 'line' || object.shape === 'arrow')) {
+    const start = object.start ?? { x: 0, y: 0 };
+    const end = object.end ?? { x: object.width, y: object.height };
+    const left = Math.min(start.x, end.x), right = Math.max(start.x, end.x);
+    const top = Math.min(start.y, end.y), bottom = Math.max(start.y, end.y);
+    if (local.x < left - tolerance || local.y < top - tolerance || local.x > right + tolerance || local.y > bottom + tolerance) return false;
+    return distanceToSegment(local, start, end) <= object.strokeWidth / 2 + tolerance;
+  }
   if (local.x < -tolerance || local.y < -tolerance || local.x > object.width + tolerance || local.y > height + tolerance) return false;
   if (object.type === 'shape' && object.shape === 'ellipse') {
     const rx = object.width / 2 + tolerance;
     const ry = object.height / 2 + tolerance;
     return ((local.x - object.width / 2) / rx) ** 2 + ((local.y - object.height / 2) / ry) ** 2 <= 1;
-  }
-  if (object.type === 'shape' && (object.shape === 'line' || object.shape === 'arrow')) {
-    return distanceToSegment(local, { x: 0, y: 0 }, { x: object.width, y: object.height }) <= object.strokeWidth / 2 + tolerance;
   }
   return true;
 }

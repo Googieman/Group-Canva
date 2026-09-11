@@ -34,6 +34,9 @@ export interface ShapeObject extends ObjectBase {
   shape: ShapeKind;
   width: number;
   height: number;
+  /** Line and arrow endpoints in local coordinates; omitted for legacy documents. */
+  start?: Point;
+  end?: Point;
   strokeColor: string;
   strokeWidth: number;
   fill: string | null;
@@ -155,6 +158,17 @@ export function objectBounds(object: CanvasObject): { left: number; top: number;
     const lines = Math.max(1, object.text.split('\n').length);
     return { left: x, top: y, right: x + object.width, bottom: y + lines * object.fontSize * object.lineHeight };
   }
+  if (object.type === 'shape' && (object.shape === 'line' || object.shape === 'arrow')) {
+    const start = object.start ?? { x: 0, y: 0 };
+    const end = object.end ?? { x: object.width, y: object.height };
+    const radius = object.strokeWidth / 2;
+    return {
+      left: x + Math.min(start.x, end.x) - radius,
+      top: y + Math.min(start.y, end.y) - radius,
+      right: x + Math.max(start.x, end.x) + radius,
+      bottom: y + Math.max(start.y, end.y) + radius,
+    };
+  }
   return { left: x, top: y, right: x + object.width, bottom: y + object.height };
 }
 
@@ -171,7 +185,8 @@ function objectValidation(object: unknown): DocumentValidation {
     if (typeof ink.userId !== 'string' || !ID.test(ink.userId) || (ink.tool !== 'brush' && ink.tool !== 'eraser') || typeof ink.color !== 'string' || !COLOR.test(ink.color) || !finite(ink.width) || ink.width < 1 || ink.width > 64 || !Array.isArray(ink.points) || ink.points.length > 100_000 || !ink.points.every(validPoint) || typeof ink.completed !== 'boolean' || typeof ink.active !== 'boolean' || (ink.completionOrder !== null && !Number.isSafeInteger(ink.completionOrder))) return { ok: false, error: 'Ink object is invalid.' };
   } else if (value.type === 'shape') {
     const shape = value as Partial<ShapeObject>;
-    if (!['rectangle', 'ellipse', 'line', 'arrow'].includes(shape.shape as string) || !finite(shape.width) || !finite(shape.height) || shape.width <= 0 || shape.height <= 0 || !finite(shape.strokeWidth) || shape.strokeWidth < 1 || shape.strokeWidth > 64 || typeof shape.strokeColor !== 'string' || !COLOR.test(shape.strokeColor) || (shape.fill !== null && (typeof shape.fill !== 'string' || !COLOR.test(shape.fill)))) return { ok: false, error: 'Shape object is invalid.' };
+    const lineLike = shape.shape === 'line' || shape.shape === 'arrow';
+    if (!['rectangle', 'ellipse', 'line', 'arrow'].includes(shape.shape as string) || !finite(shape.width) || !finite(shape.height) || shape.width <= 0 || shape.height <= 0 || !finite(shape.strokeWidth) || shape.strokeWidth < 1 || shape.strokeWidth > 64 || typeof shape.strokeColor !== 'string' || !COLOR.test(shape.strokeColor) || (shape.fill !== null && (typeof shape.fill !== 'string' || !COLOR.test(shape.fill))) || (lineLike && ((shape.start !== undefined && !validPoint(shape.start)) || (shape.end !== undefined && !validPoint(shape.end))))) return { ok: false, error: 'Shape object is invalid.' };
   } else if (value.type === 'text') {
     const text = value as Partial<TextObject>;
     if (!validText(text.text) || !finite(text.width) || text.width <= 0 || !finite(text.fontSize) || text.fontSize < 8 || text.fontSize > 256 || typeof text.color !== 'string' || !COLOR.test(text.color) || !finite(text.lineHeight) || text.lineHeight < 1 || text.lineHeight > 3) return { ok: false, error: 'Text object is invalid.' };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fitCamera, screenToWorld, worldToScreen, zoomAround, type Viewport } from '../client/viewport';
+import { fitCamera, screenToWorld, SpatialIndex, worldToScreen, zoomAround, type Viewport } from '../client/viewport';
 
 const viewport: Viewport = { width: 800, height: 600 };
 
@@ -21,5 +21,17 @@ describe('camera transforms', () => {
     const camera = fitCamera({ left: 100, top: 100, right: 300, bottom: 200 }, viewport, 40);
     expect(camera.zoom).toBeGreaterThan(1);
     expect(camera.zoom).toBeLessThanOrEqual(4);
+  });
+
+  it('culls indexed bounds while retaining oversized objects in an overflow list', () => {
+    const index = new SpatialIndex(100, 4);
+    index.insert('small', { left: 10, top: 10, right: 30, bottom: 30 });
+    index.insert('far', { left: 500, top: 500, right: 530, bottom: 530 });
+    index.insert('large', { left: -10_000, top: -10_000, right: 10_000, bottom: 10_000 });
+    expect(index.query({ left: 0, top: 0, right: 40, bottom: 40 })).toEqual(expect.arrayContaining(['small', 'large']));
+    expect(index.query({ left: 450, top: 450, right: 550, bottom: 550 })).toEqual(expect.arrayContaining(['far', 'large']));
+    expect(index.query({ left: 100, top: 100, right: 200, bottom: 200 })).not.toContain('small');
+    index.remove('small');
+    expect(index.query({ left: 0, top: 0, right: 40, bottom: 40 })).not.toContain('small');
   });
 });

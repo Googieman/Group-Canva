@@ -21,6 +21,24 @@ test('shared-room startup reaches Live together', async ({ page }) => {
   await expect(page.getByText('Connecting…', { exact: true })).not.toBeVisible();
   await expect(page.locator('canvas')).toHaveAttribute('aria-disabled', 'false');
 });
+test('a writable local canvas accepts brush and rectangle gestures through the actual canvas bounds', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New canvas', exact: true }).click();
+  await expect(page.locator('canvas')).toHaveAttribute('aria-disabled', 'false');
+  const box = (await page.locator('canvas').boundingBox())!;
+  await page.getByRole('button', { name: 'Brush (B)', exact: true }).click();
+  await page.mouse.move(box.x + box.width * .2, box.y + box.height * .4);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * .55, box.y + box.height * .5, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => ink(page)).toBeGreaterThan(50);
+  await page.getByRole('button', { name: 'Rectangle', exact: true }).click();
+  await page.mouse.move(box.x + box.width * .25, box.y + box.height * .25);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * .75, box.y + box.height * .7, { steps: 5 });
+  await page.mouse.up();
+  await expect(page.getByRole('button', { name: /undo/i })).toBeEnabled();
+});
 test('three canvases stream live strokes, erase, globally undo and redo, and hydrate late join',async({browser},testInfo)=>{
   const context=await browser.newContext({viewport:{width:1440,height:960}});
   const pages=await Promise.all([context.newPage(),context.newPage(),context.newPage()]);

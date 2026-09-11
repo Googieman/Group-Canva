@@ -14,4 +14,27 @@ describe('canvas object geometry', () => {
     expect(constrainDrag({ x: 10, y: 20 }, { x: 80, y: 60 }, 'rectangle', true)).toEqual({ x: 10, y: 20, width: 70, height: 70 });
     expect(constrainDrag({ x: 10, y: 20 }, { x: 80, y: 53 }, 'line', true)).toEqual({ x: 10, y: 20, width: 70, height: 70 });
   });
+
+  it('preserves negative drag direction for line and arrow endpoints', () => {
+    expect(constrainDrag({ x: 100, y: 120 }, { x: 40, y: 50 }, 'line', false)).toEqual({
+      x: 100, y: 120, width: -60, height: -70,
+    });
+    expect(constrainDrag({ x: 100, y: 120 }, { x: 40, y: 50 }, 'arrow', true)).toEqual({
+      x: 100, y: 120, width: -70, height: -70,
+    });
+  });
+
+  it('hit-tests translated ink and line endpoints', () => {
+    const ink: CanvasObject = {
+      id: 'ink', type: 'ink', order: 1, version: 1, translation: { x: 100, y: 80 },
+      userId: 'u', tool: 'brush', color: '#000000', width: 8, points: [{ x: 0, y: 0 }, { x: 100, y: 0 }],
+      completed: true, completionOrder: 1, active: true,
+    };
+    const line: CanvasObject = {
+      id: 'line', type: 'shape', order: 2, version: 1, translation: { x: 100, y: 120 },
+      shape: 'line', width: -60, height: -70, strokeColor: '#000000', strokeWidth: 4, fill: null,
+    };
+    expect(hitTestObject({ x: 150, y: 80 }, ink, 0)).toBe(true);
+    expect(hitTestObject({ x: 70, y: 85 }, line, 0)).toBe(true);
+  });
 });

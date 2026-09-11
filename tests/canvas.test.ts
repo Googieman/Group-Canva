@@ -184,6 +184,17 @@ describe('CanvasBoard input and rendering', () => {
     expect(callbacks.onBegin).toHaveBeenCalledWith({ x: 800, y: 450 });
     board.destroy();
   });
+  it('renders committed ink objects with their document translation', () => {
+    const { board, canvas, canvases, flush } = setup();
+    board.setObjects([{
+      id: 'ink-object', type: 'ink', order: 1, version: 1, translation: { x: 100, y: 80 },
+      userId: 'u', tool: 'brush', color: '#123456', width: 8, points: [{ x: 0, y: 0 }],
+      completed: true, completionOrder: 1, active: true,
+    }]);
+    flush();
+    expect((canvas.ops.concat(...canvases.map(value => value.ops))).some(operation => operation.type === 'dot' && operation.x === 100)).toBe(true);
+    board.destroy();
+  });
   it('cancels an active touch drawing gesture before two-finger navigation', () => {
     const { board, canvas, callbacks } = setup();
     board.setEnabled(true);

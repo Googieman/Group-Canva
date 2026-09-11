@@ -1,6 +1,6 @@
 import { BOARD_HEIGHT, BOARD_WIDTH, type Point, type Stroke, type Tool } from '../shared/protocol';
-import type { CanvasObject } from '../shared/document';
-import { panCamera, screenToWorld, zoomAround, type Camera } from './viewport';
+import { objectBounds as documentObjectBounds, type CanvasObject } from '../shared/document';
+import { panCamera, screenToWorld, SpatialIndex, zoomAround, type Camera } from './viewport';
 import { diagnostics } from './diagnostics';
 
 export interface CanvasCallbacks {
@@ -136,17 +136,14 @@ function mergeBounds(bounds: InkBounds[]): InkBounds[] {
   return merged;
 }
 
-function objectBounds(object: CanvasObject): InkBounds | null {
-  const x = object.translation.x, y = object.translation.y;
-  if (object.type === 'ink') return strokeBounds({ ...object, points: object.points.map(point => ({ x: point.x + x, y: point.y + y })) });
-  const height = object.type === 'text' ? Math.max(1, object.text.split('\n').length) * object.fontSize * object.lineHeight : object.height;
-  return { left: x, top: y, right: x + object.width, bottom: y + height };
+function objectBounds(object: CanvasObject): InkBounds | null { return documentObjectBounds(object); }
+
+function setWorldTransform(ctx: CanvasRenderingContext2D, dpr: number, camera: Camera, viewport: { width: number; height: number }): void {
+  ctx.setTransform(dpr * camera.zoom, 0, 0, dpr * camera.zoom,
+    dpr * (viewport.width / 2 - camera.x * camera.zoom), dpr * (viewport.height / 2 - camera.y * camera.zoom));
 }
 
-function setWorldTransform(ctx: CanvasRenderingContext2D, dpr: number, camera: Camera): void {
-  ctx.setTransform(dpr * camera.zoom, 0, 0, dpr * camera.zoom,
-    dpr * (BOARD_WIDTH / 2 - camera.x * camera.zoom), dpr * (BOARD_HEIGHT / 2 - camera.y * camera.zoom));
-}
+function setDefaultWorldTransform(ctx: CanvasRenderingContext2D, dpr: number): void { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
 
 function drawObject(ctx: CanvasRenderingContext2D, object: CanvasObject, assets: Map<string, CanvasImageSource>): void {
   const x = object.translation.x, y = object.translation.y;
@@ -154,13 +151,15 @@ function drawObject(ctx: CanvasRenderingContext2D, object: CanvasObject, assets:
   if (object.type === 'shape') {
     ctx.lineWidth = object.strokeWidth; ctx.strokeStyle = object.strokeColor; ctx.fillStyle = object.fill ?? 'transparent';
     if (object.shape === 'line' || object.shape === 'arrow') {
-      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + object.width, y + object.height); ctx.stroke();
+      const start = object.start ?? { x: 0, y: 0 };
+      const end = object.end ?? { x: object.width, y: object.height };
+      ctx.beginPath(); ctx.moveTo(x + start.x, y + start.y); ctx.lineTo(x + end.x, y + end.y); ctx.stroke();
       if (object.shape === 'arrow') {
-        const angle = Math.atan2(object.height, object.width), size = Math.max(8, object.strokeWidth * 3);
-        ctx.beginPath(); ctx.moveTo(x + object.width, y + object.height);
-        ctx.lineTo(x + object.width - Math.cos(angle - Math.PI / 6) * size, y + object.height - Math.sin(angle - Math.PI / 6) * size);
-        ctx.moveTo(x + object.width, y + object.height);
-        ctx.lineTo(x + object.width - Math.cos(angle + Math.PI / 6) * size, y + object.height - Math.sin(angle + Math.PI / 6) * size); ctx.stroke();
+        const angle = Math.atan2(end.y - start.y, end.x - start.x), size = Math.max(8, object.strokeWidth * 3);
+        ctx.beginPath(); ctx.moveTo(x + end.x, y + end.y);
+        ctx.lineTo(x + end.x - Math.cos(angle - Math.PI / 6) * size, y + end.y - Math.sin(angle - Math.PI / 6) * size);
+        ctx.moveTo(x + end.x, y + end.y);
+        ctx.lineTo(x + end.x - Math.cos(angle + Math.PI / 6) * size, y + end.y - Math.sin(angle + Math.PI / 6) * size); ctx.stroke();
       }
     } else {
       ctx.beginPath();
@@ -201,8 +200,10 @@ export class CanvasBoard {
   private readonly tailCache: HTMLCanvasElement;
   private readonly tailCacheContext: CanvasRenderingContext2D;
   private strokes: Stroke[] = [];
+  private legacyStrokes: Stroke[] = [];
   private objects: CanvasObject[] = [];
   private assets = new Map<string, CanvasImageSource>();
+  private readonly objectIndex = new SpatialIndex();
   private selectedIds = new Set<string>();
   private marquee: { start: Point; end: Point } | null = null;
   private camera: Camera = { x: BOARD_WIDTH / 2, y: BOARD_HEIGHT / 2, zoom: 1 };
@@ -223,6 +224,7 @@ export class CanvasBoard {
   private spaceDown = false;
   private lastPoint: Point | null = null;
   private dpr = 0;
+  private viewport = { width: BOARD_WIDTH, height: BOARD_HEIGHT };
   private tool: Tool = 'brush';
   private color = '#27272a';
   private width = 4;
@@ -260,13 +262,17 @@ export class CanvasBoard {
 
   setStrokes(strokes: Stroke[]): void {
     if (this.destroyed) return;
-    this.strokes = orderedVisibleStrokes(strokes);
+    this.legacyStrokes = strokes;
+    this.rebuildInkStrokes();
     this.invalidate();
   }
 
   setObjects(objects: CanvasObject[]): void {
     if (this.destroyed) return;
     this.objects = objects.slice().sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+    this.objectIndex.clear();
+    for (const object of this.objects) { const bounds = objectBounds(object); if (bounds) this.objectIndex.insert(object.id, bounds); }
+    this.rebuildInkStrokes();
     this.fullRepaint = true;
     this.invalidate();
   }
@@ -330,12 +336,27 @@ export class CanvasBoard {
     this.tailCache.width = 0;
     this.tailCache.height = 0;
     this.strokes = [];
+    this.legacyStrokes = [];
     this.cachedPrefix = [];
     this.paths.clear();
     this.renderedInk.clear();
     this.cachedTail = [];
+    this.objectIndex.clear();
     this.touchPoints.clear();
     this.touchGesture = null;
+  }
+
+  private rebuildInkStrokes(): void {
+    const inkObjects = this.objects.filter((object): object is Extract<CanvasObject, { type: 'ink' }> => object.type === 'ink' && object.active);
+    const documentIds = new Set(inkObjects.map(object => object.id));
+    const committed = inkObjects.map(object => ({
+      ...object,
+      points: object.points.map(point => ({ x: point.x + object.translation.x, y: point.y + object.translation.y })),
+    }));
+    this.strokes = orderedVisibleStrokes([
+      ...this.legacyStrokes.filter(stroke => !documentIds.has(stroke.id)),
+      ...committed,
+    ]);
   }
 
   private point(event: Pick<PointerEvent, 'clientX' | 'clientY'>): Point | null {
@@ -486,7 +507,15 @@ export class CanvasBoard {
     this.invalidate();
   };
 
-  private readonly onKeyDown = (event: KeyboardEvent): void => { if (event.code === 'Space') this.spaceDown = true; };
+  private readonly onKeyDown = (event: KeyboardEvent): void => {
+    if (event.code === 'Space') this.spaceDown = true;
+    if (event.code === 'Escape') {
+      this.cancelPointer();
+      this.releasePan();
+      this.touchPoints.clear();
+      this.touchGesture = null;
+    }
+  };
   private readonly onKeyUp = (event: KeyboardEvent): void => { if (event.code === 'Space') this.spaceDown = false; };
   private readonly onWheel = (event: WheelEvent): void => {
     if (!this.enabled) return;
@@ -574,7 +603,7 @@ export class CanvasBoard {
       this.cacheContext.clearRect(0, 0, this.cache.width, this.cache.height);
       this.cachedPrefix = [];
     }
-    this.cacheContext.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    setDefaultWorldTransform(this.cacheContext, this.dpr);
     for (let i = this.cachedPrefix.length; i < stableCount; i++) {
       const stroke = this.strokes[i];
       drawStroke(this.cacheContext, stroke, this.pathFor(stroke));
@@ -601,7 +630,7 @@ export class CanvasBoard {
       if (!tailMatches) {
         this.tailCacheContext.setTransform(1, 0, 0, 1, 0, 0);
         this.tailCacheContext.clearRect(0, 0, this.tailCache.width, this.tailCache.height);
-        this.tailCacheContext.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+        setDefaultWorldTransform(this.tailCacheContext, this.dpr);
         for (const stroke of tail) drawStroke(this.tailCacheContext, stroke, this.pathFor(stroke));
         this.cachedTail = tail.map(stroke => ({ ...stroke, points: stroke.points.map(point => ({ ...point })) }));
       }
@@ -618,7 +647,7 @@ export class CanvasBoard {
       if (right <= left || bottom <= top) continue;
       repaintArea += (right - left) * (bottom - top);
       this.context.save();
-      this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      setDefaultWorldTransform(this.context, this.dpr);
       this.context.beginPath();
       this.context.rect(left / this.dpr, top / this.dpr, (right - left) / this.dpr, (bottom - top) / this.dpr);
       this.context.clip();
@@ -628,14 +657,14 @@ export class CanvasBoard {
       this.context.globalCompositeOperation = 'source-over';
       this.context.drawImage(this.cache, left, top, right - left, bottom - top, left, top, right - left, bottom - top);
       if (diagnostics) copyMs += performance.now() - regionCopyStarted;
-      this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      setDefaultWorldTransform(this.context, this.dpr);
       const regionReplayStarted = diagnostics ? performance.now() : 0;
       for (let i = stableCount; i < this.strokes.length; i++) {
         if (canCacheTail && i === cacheStart) {
           this.context.globalCompositeOperation = 'source-over';
           this.context.setTransform(1, 0, 0, 1, 0, 0);
           this.context.drawImage(this.tailCache, left, top, right - left, bottom - top, left, top, right - left, bottom - top);
-          this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+          setDefaultWorldTransform(this.context, this.dpr);
           i = cacheEnd - 1;
           continue;
         }
@@ -644,7 +673,7 @@ export class CanvasBoard {
         if (bounds && intersects(bounds, region)) drawStroke(this.context, stroke, this.pathFor(stroke));
       }
       this.context.globalCompositeOperation = 'source-over';
-      this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      setDefaultWorldTransform(this.context, this.dpr);
       for (const object of this.objects) {
         const bounds = objectBounds(object);
         if (!bounds || !intersects(bounds, region)) continue;
@@ -653,7 +682,7 @@ export class CanvasBoard {
       if (diagnostics) replayMs += performance.now() - regionReplayStarted;
       this.context.restore();
     }
-    this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    setDefaultWorldTransform(this.context, this.dpr);
     drawSelection(this.context, this.objects, this.selectedIds, this.marquee, 1.5);
     this.fullRepaint = false;
     diagnostics?.record('surfaceCopyMs', copyMs);
@@ -669,14 +698,15 @@ export class CanvasBoard {
   }
 
   private renderCameraFrame(): void {
-    const view: InkBounds = { left: this.camera.x - BOARD_WIDTH / (2 * this.camera.zoom), top: this.camera.y - BOARD_HEIGHT / (2 * this.camera.zoom), right: this.camera.x + BOARD_WIDTH / (2 * this.camera.zoom), bottom: this.camera.y + BOARD_HEIGHT / (2 * this.camera.zoom) };
+    const view: InkBounds = { left: this.camera.x - this.viewport.width / (2 * this.camera.zoom), top: this.camera.y - this.viewport.height / (2 * this.camera.zoom), right: this.camera.x + this.viewport.width / (2 * this.camera.zoom), bottom: this.camera.y + this.viewport.height / (2 * this.camera.zoom) };
     this.context.setTransform(1, 0, 0, 1, 0, 0);
     this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.context.globalCompositeOperation = 'source-over';
-    setWorldTransform(this.context, this.dpr, this.camera);
+    setWorldTransform(this.context, this.dpr, this.camera, this.viewport);
     for (const stroke of this.strokes) { const bounds = strokeBounds(stroke); if (!bounds || intersects(bounds, view)) drawStroke(this.context, stroke, this.pathFor(stroke)); }
     this.context.globalCompositeOperation = 'source-over';
-    for (const object of this.objects) { const bounds = objectBounds(object); if (!bounds || intersects(bounds, view)) drawObject(this.context, object, this.assets); }
+    const visibleObjectIds = new Set(this.objectIndex.query(view));
+    for (const object of this.objects) { if (visibleObjectIds.has(object.id)) drawObject(this.context, object, this.assets); }
     drawSelection(this.context, this.objects, this.selectedIds, this.marquee, Math.max(1, 1.5 / this.camera.zoom));
     this.context.setTransform(1, 0, 0, 1, 0, 0);
     this.fullRepaint = false;
