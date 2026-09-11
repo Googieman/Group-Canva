@@ -71,6 +71,7 @@ it('hydrates from the current page origin when no server URL is configured', asy
   const server = await createAppServer({ host: '127.0.0.1' }); servers.push(server);
   vi.stubEnv('VITE_SERVER_URL', '');
   vi.stubGlobal('window', { location: { origin: server.url, hostname: '127.0.0.1' } });
+  vi.stubGlobal('location', { origin: server.url, protocol: 'http:', host: new URL(server.url).host, pathname: '/', search: '', hash: '' });
   const state = new DrawingState();
   const callbacks = { status: vi.fn(), snapshot: vi.fn(), drawing: vi.fn(), users: vi.fn(), cursor: vi.fn(), error: vi.fn() };
   const connection = new Connection(state, 'same-origin-network-test', 'Tester', callbacks); connections.push(connection);

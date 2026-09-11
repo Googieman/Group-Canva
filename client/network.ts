@@ -16,13 +16,14 @@ interface Callbacks {
   ping?(label: string): void;
   roomStatus?(status: { status: 'active' | 'paused' | 'ended'; message?: string }): void;
   hostSave?(watermark: { epoch: string; revision: number } | null): void;
+  connectionError?(message: string): void;
 }
 interface ConnectionOptions { host?: boolean; hostCapability?: string }
 export function resolveSocketEndpoint(): string | undefined {
   const configuredServerUrl = import.meta.env.VITE_SERVER_URL?.trim();
   if (configuredServerUrl) return configuredServerUrl;
   if (typeof window !== 'undefined' && window.location.hostname === 'group-canva.pages.dev') return 'https://group-canvas.onrender.com';
-  return typeof window !== 'undefined' ? window.location.origin : undefined;
+  return undefined;
 }
 export class Connection {
   private socket: Socket<ServerEvents, ClientEvents>;
@@ -36,12 +37,15 @@ export class Connection {
   private pingSamples: number[] = [];
   private roomPaused = false;
   private assetToken: string | undefined;
+  private everHydrated = false;
+  private failed = false;
   constructor(readonly state: DrawingState, private readonly roomId: string, private readonly name: string, private callbacks: Callbacks, private readonly options: ConnectionOptions = {}) {
     this.socket = io(resolveSocketEndpoint(), {
       transports:['websocket'],autoConnect:false,reconnection:true,reconnectionDelay:500,
       reconnectionDelayMax:8000,randomizationFactor:0.5,timeout:20000,
     });
     this.socket.on('connect', () => {
+      if (this.failed) return;
       const generation = ++this.generation;
       clearTimeout(this.reconnectTimer);
       this.resyncPending = false;
@@ -61,6 +65,8 @@ export class Connection {
       this.assetToken = snapshot.assetToken;
       if (snapshot.hostCapability && this.options.host) this.options.hostCapability = snapshot.hostCapability;
       if (!state.hydrate(snapshot)) { this.resync(); return; }
+      this.everHydrated = true;
+      this.failed = false;
       this.generation++;
       callbacks.snapshot(snapshot,reset); callbacks.users(snapshot.users); callbacks.roomStatus?.({ status: snapshot.roomStatus ?? 'active' });
       callbacks.status('connected'); callbacks.drawing(); this.startPings();
@@ -101,10 +107,10 @@ export class Connection {
         },500 + Math.random()*500);
       }
     });
-    this.socket.on('connect_error', () => callbacks.status('disconnected','Unable to connect. Retrying… A sleeping server may take a minute.'));
+    this.socket.on('connect_error', () => { if (!this.failed) callbacks.status('disconnected','Unable to connect. Retrying… A sleeping server may take a minute.'); });
     this.socket.io.on('reconnect_attempt', () => callbacks.status('connecting','Reconnecting to your canvas…'));
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.onVisibilityChange);
-    callbacks.status('connecting'); this.socket.connect();
+    callbacks.status('connecting'); this.armHydrationTimeout(); this.socket.connect();
   }
   send(command: Command) {
     if (!this.socket.connected || !this.state.ready || this.resyncPending || this.roomPaused) return false;
@@ -132,10 +138,24 @@ export class Connection {
     this.callbacks.status('syncing','Refreshing the shared canvas…');
     this.armHydrationTimeout(); this.socket.emit('room:resync');
   }
+  retry(): void {
+    if (this.destroyed) return;
+    this.failed = false;
+    this.generation++;
+    this.state.disconnect();
+    this.callbacks.status('connecting', 'Retrying…');
+    this.armHydrationTimeout();
+    this.socket.connect();
+  }
   private armHydrationTimeout() {
     clearTimeout(this.hydrateTimer);
     this.hydrateTimer = setTimeout(() => {
-      this.socket.disconnect(); this.socket.connect();
+      if (this.destroyed || this.everHydrated || this.failed) return;
+      this.failed = true;
+      this.generation++;
+      this.socket.disconnect();
+      this.stopPings();
+      this.callbacks.connectionError?.('Unable to connect');
     },15000);
   }
   destroy() {

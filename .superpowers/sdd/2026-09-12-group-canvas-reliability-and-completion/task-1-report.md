@@ -20,4 +20,10 @@ Status: DONE_WITH_CONCERNS
 
 ## Concern
 
-The existing occupied port 3000 was not terminated. Focused browser verification used E2E port 3010 to avoid changing another running process. The broader retry UI, configurable Vite proxy, and remaining reliability tasks are still covered by later plan tasks.
+The existing occupied port 3000 was not terminated. Focused browser verification used alternate E2E ports to avoid changing another running process. The remaining reliability tasks are still covered by later plan tasks.
+
+## Review fix loop
+
+- The first task review found missing terminal retry behavior, missing Vite proxy/documentation changes, and a resolver-contract mismatch.
+- Fixed in the follow-up patch: `Connection.retry()` and terminal hydration timeout, UI Retry action, configurable `BACKEND_PORT`/`BACKEND_URL` proxy, README/.env guidance, and undefined ordinary same-origin resolver return.
+- Reverified with `npm run typecheck`, targeted Vitest (8 passed), Chromium browser smoke (6 passed), and `npm run build`.

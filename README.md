@@ -14,6 +14,7 @@ Open **http://localhost:3000** in two or more windows. Create or open a canvas f
 
 ```sh
 npm run dev          # Vite http://localhost:5173 + backend :3000, with reload
+# PowerShell: $env:BACKEND_PORT=3001; $env:PORT=3001; npm run dev
 npm test             # State, input/rendering helpers, and real WebSocket integration
 npm run build        # Strict TypeScript + production bundles
 npx playwright install chromium firefox webkit
@@ -48,7 +49,7 @@ Live demo: **https://group-canva.pages.dev**. The current backend health endpoin
 3. Create a Cloudflare Pages project with build command `npm ci && npm run build`, output directory `dist/client`, and Node version `24.19.0`. Set **build-time** `VITE_SERVER_URL=https://your-service.onrender.com`. Socket.io upgrades this HTTPS endpoint to secure WebSocket transport.
 4. Redeploy the static frontend whenever `VITE_SERVER_URL` changes. For this repository, the public Pages hostname also has a narrow production-host fallback to the Render URL so the demo remains usable if a Pages build mode fails to inject the public build variable. Open the public Pages URL in several browsers and repeat the walkthrough.
 
-`VITE_SERVER_URL` is public configuration, never a secret. For local development it defaults to the page's origin and Vite proxies `/socket.io` to port 3000. Backend `PORT`, `HOST`, and `ALLOWED_ORIGINS` are process environment variables; `.env.example` is a reference and is not automatically loaded by Node.
+`VITE_SERVER_URL` is public configuration, never a secret. For local development it defaults to the page's origin and Vite proxies `/socket.io` to `BACKEND_PORT` (or `PORT`, then 3000). Backend `PORT`, `HOST`, and `ALLOWED_ORIGINS` are process environment variables; `.env.example` is a reference and is not automatically loaded by Node. If a backend port is already occupied, stop the old process or choose a free `PORT`/`BACKEND_PORT` pair before starting the dev server.
 
 Cloudflare distributes the interface globally; the drawing stream still travels to the authoritative Singapore server. Render Free can spin down after **15 minutes without inbound traffic**, take **about a minute** to wake, and restart at any time. Restarting clears this app's memory. Free quotas also apply; do not enable paid upgrades or artificial keep-alive requests. See [Render Free](https://render.com/docs/free), [Render regions](https://render.com/docs/regions), and [Cloudflare Vite deployment](https://developers.cloudflare.com/pages/framework-guides/deploy-a-vite3-project/).
 
