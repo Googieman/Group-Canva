@@ -20,7 +20,11 @@ export class Connection {
   private generation = 0;
   private destroyed = false;
   constructor(readonly state: DrawingState, roomId: string, name: string, private callbacks: Callbacks) {
-    this.socket = io(import.meta.env.VITE_SERVER_URL || undefined, {
+    const configuredServerUrl = import.meta.env.VITE_SERVER_URL?.trim();
+    const hostedDemoUrl = typeof window !== 'undefined' && window.location.hostname === 'group-canva.pages.dev'
+      ? 'https://group-canvas.onrender.com'
+      : undefined;
+    this.socket = io(configuredServerUrl || hostedDemoUrl || undefined, {
       transports:['websocket'],autoConnect:false,reconnection:true,reconnectionDelay:500,
       reconnectionDelayMax:8000,randomizationFactor:0.5,timeout:20000,
     });
