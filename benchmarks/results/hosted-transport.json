@@ -1,0 +1,28 @@
+{
+  "at": "2026-09-11T06:32:58.867Z",
+  "commit": "be797a62639e0e083f4a409f0e2a8c0edc52153b",
+  "frontendOrigin": "https://group-canva.pages.dev",
+  "backendOrigin": "https://group-canvas.onrender.com",
+  "frontendHttps": true,
+  "backendHttps": true,
+  "frontendHttpStatus": 200,
+  "health": {
+    "status": "ok",
+    "rooms": 3
+  },
+  "acceptedOrigin": {
+    "accepted": true,
+    "transport": "websocket",
+    "roomId": "hosted-1789108378264"
+  },
+  "unrelatedOrigin": {
+    "origin": "https://unrelated.example",
+    "rejected": true,
+    "probe": {
+      "accepted": false,
+      "error": "websocket error"
+    }
+  },
+  "websocketTransport": "websocket",
+  "websocketTransportConfirmed": true
+}
