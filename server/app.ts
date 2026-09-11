@@ -9,19 +9,19 @@ import { BATCH_SIZE, DEFAULT_ROOM, PROTOCOL_VERSION, type AssetMeta, type Change
 export interface Limits {
   rooms: number; connections: number; usersPerRoom: number; strokesPerRoom: number;
   pointsPerStroke: number; pointsPerRoom: number; totalPoints: number; usedIdsPerRoom: number;
-  commandsPerSecond: number; commandBurst: number; idleRoomMs: number; hostGraceMs: number; assetPerImageBytes: number; assetsPerRoomBytes: number; totalAssetBytes: number;
+  commandsPerSecond: number; commandBurst: number; operationResultsPerRoom: number; idleRoomMs: number; hostGraceMs: number; assetPerImageBytes: number; assetsPerRoomBytes: number; totalAssetBytes: number;
 }
 const DEFAULT_LIMITS: Limits = {
   rooms: 32, connections: 256, usersPerRoom: 32, strokesPerRoom: 2000,
   pointsPerStroke: 10000, pointsPerRoom: 50000, totalPoints: 250000, usedIdsPerRoom: 20000,
-  commandsPerSecond: 150, commandBurst: 300, idleRoomMs: 30 * 60 * 1000, hostGraceMs: 2 * 60 * 1000, assetPerImageBytes: 5 * 1024 * 1024, assetsPerRoomBytes: 20 * 1024 * 1024, totalAssetBytes: 100 * 1024 * 1024,
+  commandsPerSecond: 150, commandBurst: 300, operationResultsPerRoom: 4096, idleRoomMs: 30 * 60 * 1000, hostGraceMs: 2 * 60 * 1000, assetPerImageBytes: 5 * 1024 * 1024, assetsPerRoomBytes: 20 * 1024 * 1024, totalAssetBytes: 100 * 1024 * 1024,
 };
 export interface ServerOptions { port?: number; host?: string; allowedOrigins?: string[]; limits?: Partial<Limits>; staticDir?: string; onCommandTiming?: (durationMs: number) => void }
 interface Room {
   id: string; epoch: string; revision: number; nextOrder: number; nextCompletion: number;
   strokes: Map<string, Stroke>; usedIds: Set<string>; users: Map<string, User>;
   unfinished: Map<string, string>; redoIds: string[]; points: number;
-  document: CanvasDocument; documentHistory: DocumentHistory; operationResults: Map<string, Result>; leases: Map<string, { leaseId: string; userId: string; expiresAt: number }>;
+  document: CanvasDocument; documentHistory: DocumentHistory; operationResults: Map<string, { fingerprint: string; result: Result }>; leases: Map<string, { leaseId: string; userId: string; expiresAt: number }>;
   assets: Map<string, { meta: AssetMeta; bytes: Buffer }>; hiddenInkIds: Set<string>;
   managed: boolean; hostSocketId: string | null; hostCapability: string; status: 'active' | 'paused' | 'ended'; hostWatermark: { epoch: string; revision: number } | null; hostGrace?: ReturnType<typeof setTimeout>; hostLagTimer?: ReturnType<typeof setTimeout>; documentMode: boolean;
   expires?: ReturnType<typeof setTimeout>;
@@ -34,31 +34,42 @@ const COLORS = ['#6857e8', '#e66b3b', '#168d83', '#bc4e93', '#3d7fd0', '#a37919'
 const ok: Result = { ok: true };
 const fail = (error: string): Result => ({ ok: false, error });
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+function optionalOperation(value: Record<string, unknown>, allowed: string[]): boolean {
+  if (Object.keys(value).some(key => !allowed.includes(key))) return false;
+  return !('operationId' in value) || (typeof value.operationId === 'string' && ID.test(value.operationId));
+}
+function expectedVersions(value: unknown): value is Record<string, number> {
+  return record(value) && Object.entries(value).every(([id, version]) => ID.test(id) && Number.isSafeInteger(version) && (version as number) >= 1);
+}
 function validCommand(value: unknown): value is Command {
   if (!record(value) || typeof value.type !== 'string') return false;
   const keys = Object.keys(value).sort().join(',');
-  if (value.type === 'history:undo' || value.type === 'history:redo') return (keys === 'type' || keys === 'operationId,type') && (!('operationId' in value) || (typeof value.operationId === 'string' && ID.test(value.operationId)));
+  if (value.type === 'history:undo' || value.type === 'history:redo') return optionalOperation(value, ['type', 'expectedVersions', 'operationId']) && (!('expectedVersions' in value) || expectedVersions(value.expectedVersions));
   if (value.type === 'object:lease') return validLeaseCommand(value);
   if (typeof value.type === 'string' && value.type.startsWith('object:')) return validDocumentCommand(value);
   if (typeof value.id !== 'string' || !ID.test(value.id)) return false;
   switch (value.type) {
-    case 'stroke:begin': return keys === 'color,id,point,tool,type,width' && (value.tool === 'brush' || value.tool === 'eraser') && typeof value.color === 'string' && COLOR.test(value.color) && typeof value.width === 'number' && Number.isFinite(value.width) && value.width >= 1 && value.width <= 64 && pointWithinWorld(value.point);
-    case 'stroke:points': return keys === 'id,offset,points,type' && Number.isSafeInteger(value.offset) && (value.offset as number) >= 1 && Array.isArray(value.points) && value.points.length >= 1 && value.points.length <= BATCH_SIZE && value.points.every(pointWithinWorld);
-    case 'stroke:end': case 'stroke:cancel': return keys === 'id,type';
+    case 'stroke:begin': return optionalOperation(value, ['color', 'id', 'operationId', 'point', 'tool', 'type', 'width']) && (value.tool === 'brush' || value.tool === 'eraser') && typeof value.color === 'string' && COLOR.test(value.color) && typeof value.width === 'number' && Number.isFinite(value.width) && value.width >= 1 && value.width <= 64 && pointWithinWorld(value.point);
+    case 'stroke:points': return optionalOperation(value, ['id', 'offset', 'operationId', 'points', 'type']) && Number.isSafeInteger(value.offset) && (value.offset as number) >= 1 && Array.isArray(value.points) && value.points.length >= 1 && value.points.length <= BATCH_SIZE && value.points.every(pointWithinWorld);
+    case 'stroke:end': case 'stroke:cancel': return optionalOperation(value, ['id', 'operationId', 'type']);
     default: return false;
   }
 }
 function validDocumentCommand(value: Record<string, unknown>): value is DocumentCommand {
-  const optionalOperation = (keys: string[], allowed: string[]) => keys.every(key => allowed.includes(key));
-  if (value.type === 'object:create') return optionalOperation(Object.keys(value), ['type', 'object', 'operationId']) && record(value.object) && (!('operationId' in value) || (typeof value.operationId === 'string' && ID.test(value.operationId)));
-  if (value.type === 'object:move') return optionalOperation(Object.keys(value), ['type', 'ids', 'delta', 'expectedVersions', 'leaseId', 'operationId']) && Array.isArray(value.ids) && value.ids.length > 0 && value.ids.every(id => typeof id === 'string' && ID.test(id)) && pointWithinWorld(value.delta) && record(value.expectedVersions) && Object.values(value.expectedVersions).every(version => Number.isSafeInteger(version) && (version as number) >= 1) && (!('leaseId' in value) || typeof value.leaseId === 'string') && (!('operationId' in value) || (typeof value.operationId === 'string' && ID.test(value.operationId)));
-  if (value.type === 'object:resize') return optionalOperation(Object.keys(value), ['type', 'id', 'width', 'height', 'expectedVersion', 'preserveAspectRatio', 'leaseId', 'operationId']) && typeof value.id === 'string' && ID.test(value.id) && typeof value.width === 'number' && Number.isFinite(value.width) && typeof value.height === 'number' && Number.isFinite(value.height) && Number.isSafeInteger(value.expectedVersion) && (value.expectedVersion as number) >= 1 && (!('preserveAspectRatio' in value) || typeof value.preserveAspectRatio === 'boolean') && (!('leaseId' in value) || typeof value.leaseId === 'string') && (!('operationId' in value) || (typeof value.operationId === 'string' && ID.test(value.operationId)));
-  if (value.type === 'object:text') return optionalOperation(Object.keys(value), ['type', 'id', 'text', 'expectedVersion', 'leaseId', 'operationId']) && typeof value.id === 'string' && ID.test(value.id) && typeof value.text === 'string' && Number.isSafeInteger(value.expectedVersion) && (value.expectedVersion as number) >= 1 && (!('leaseId' in value) || typeof value.leaseId === 'string') && (!('operationId' in value) || (typeof value.operationId === 'string' && ID.test(value.operationId)));
-  if (value.type === 'object:delete') return optionalOperation(Object.keys(value), ['type', 'ids', 'expectedVersions', 'leaseId', 'operationId']) && Array.isArray(value.ids) && value.ids.length > 0 && value.ids.every(id => typeof id === 'string' && ID.test(id)) && record(value.expectedVersions) && Object.values(value.expectedVersions).every(version => Number.isSafeInteger(version) && (version as number) >= 1) && (!('leaseId' in value) || typeof value.leaseId === 'string') && (!('operationId' in value) || (typeof value.operationId === 'string' && ID.test(value.operationId)));
+  if (value.type === 'object:create') return optionalOperation(value, ['type', 'object', 'operationId']) && record(value.object);
+  if (value.type === 'object:move') return optionalOperation(value, ['type', 'ids', 'delta', 'expectedVersions', 'leaseId', 'operationId']) && Array.isArray(value.ids) && value.ids.length > 0 && value.ids.every(id => typeof id === 'string' && ID.test(id)) && pointWithinWorld(value.delta) && expectedVersions(value.expectedVersions) && (!('leaseId' in value) || typeof value.leaseId === 'string');
+  if (value.type === 'object:resize') return optionalOperation(value, ['type', 'id', 'width', 'height', 'expectedVersion', 'preserveAspectRatio', 'leaseId', 'operationId']) && typeof value.id === 'string' && ID.test(value.id) && typeof value.width === 'number' && Number.isFinite(value.width) && typeof value.height === 'number' && Number.isFinite(value.height) && Number.isSafeInteger(value.expectedVersion) && (value.expectedVersion as number) >= 1 && (!('preserveAspectRatio' in value) || typeof value.preserveAspectRatio === 'boolean') && (!('leaseId' in value) || typeof value.leaseId === 'string');
+  if (value.type === 'object:text') return optionalOperation(value, ['type', 'id', 'text', 'expectedVersion', 'leaseId', 'operationId']) && typeof value.id === 'string' && ID.test(value.id) && typeof value.text === 'string' && Number.isSafeInteger(value.expectedVersion) && (value.expectedVersion as number) >= 1 && (!('leaseId' in value) || typeof value.leaseId === 'string');
+  if (value.type === 'object:delete') return optionalOperation(value, ['type', 'ids', 'expectedVersions', 'leaseId', 'operationId']) && Array.isArray(value.ids) && value.ids.length > 0 && value.ids.every(id => typeof id === 'string' && ID.test(id)) && expectedVersions(value.expectedVersions) && (!('leaseId' in value) || typeof value.leaseId === 'string');
   return false;
 }
 function validLeaseCommand(value: Record<string, unknown>): boolean {
   return value.type === 'object:lease' && Object.keys(value).sort().join(',') === 'action,ids,leaseId,type' && Array.isArray(value.ids) && value.ids.length > 0 && value.ids.length <= 10_000 && value.ids.every(id => typeof id === 'string' && ID.test(id)) && typeof value.leaseId === 'string' && ID.test(value.leaseId) && ['acquire', 'renew', 'release'].includes(value.action as string);
+}
+function canonicalize(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalize).join(',')}]`;
+  if (record(value)) return `{${Object.keys(value).filter(key => key !== 'operationId').sort().map(key => `${JSON.stringify(key)}:${canonicalize(value[key])}`).join(',')}}`;
+  return JSON.stringify(value);
 }
 function pointWithinWorld(value: unknown): value is Point {
   return record(value) && Object.keys(value).length === 2 && typeof value.x === 'number' && Number.isFinite(value.x) && Math.abs(value.x) <= 100_000 && typeof value.y === 'number' && Number.isFinite(value.y) && Math.abs(value.y) <= 100_000;
@@ -161,7 +172,7 @@ export async function createAppServer(options: ServerOptions = {}) {
     if (room.managed && room.status === 'ended') { endedManagedRooms.add(room.id); while (endedManagedRooms.size > 4096) endedManagedRooms.delete(endedManagedRooms.values().next().value!); }
   }
   function syncLegacyDocument(room: Room): void {
-    const legacy = legacyStrokesToDocument([...room.strokes.values()].filter(stroke => !room.hiddenInkIds.has(stroke.id)), room.document.id, room.document.title);
+    const legacy = legacyStrokesToDocument([...room.strokes.values()].filter(stroke => stroke.completed && stroke.active && !room.hiddenInkIds.has(stroke.id)), room.document.id, room.document.title);
     const nonInk = room.document.objects.filter(object => object.type !== 'ink');
     const priorInk = new Map(room.document.objects.filter((object): object is Extract<CanvasObject, { type: 'ink' }> => object.type === 'ink').map(object => [object.id, object]));
     const ink = legacy.objects.map(object => {
@@ -193,7 +204,11 @@ export async function createAppServer(options: ServerOptions = {}) {
       const stroke = room.strokes.get(patch.id); if (stroke) room.strokes.set(patch.id, { ...stroke, active: false });
     }
   }
-  function syncStrokesAfterDocumentHistory(room: Room, transaction: Transaction, direction: 'before' | 'after'): void { for (const patch of transaction.patches) syncStrokeFromPatch(room, patch, direction); syncLegacyDocument(room); }
+  function syncStrokesAfterDocumentHistory(room: Room, transaction: Transaction, direction: 'before' | 'after'): void {
+    for (const patch of transaction.patches) syncStrokeFromPatch(room, patch, direction);
+    room.redoIds = room.documentHistory.redo.flatMap(item => item.patches.map(patch => patch.id));
+    syncLegacyDocument(room);
+  }
   function protectSlowPeers(room: Room) {
     for (const id of room.users.keys()) {
       const peer = io.sockets.sockets.get(id);
@@ -272,16 +287,18 @@ export async function createAppServer(options: ServerOptions = {}) {
   function apply(room: Room, userId: string, cmd: Command): Result {
     if (room.managed && room.status !== 'active') return fail(room.status === 'ended' ? 'This session has ended.' : 'The host is offline. Editing is paused until they reconnect.');
     const operationId = 'operationId' in cmd && typeof cmd.operationId === 'string' ? cmd.operationId : undefined;
+    const fingerprint = operationId ? canonicalize(cmd) : undefined;
     if (operationId) {
       const prior = room.operationResults.get(operationId);
-      if (prior) return prior;
+      if (prior) return prior.fingerprint === fingerprint ? prior.result : fail('operation ID was already used for a different command body.');
     }
-    const remember = (result: Result) => { if (operationId && result.ok) { room.operationResults.set(operationId, result); while (room.operationResults.size > 4096) room.operationResults.delete(room.operationResults.keys().next().value!); } return result; };
+    const remember = (result: Result) => { if (operationId && fingerprint && result.ok) { room.operationResults.set(operationId, { fingerprint, result }); while (room.operationResults.size > limits.operationResultsPerRoom) room.operationResults.delete(room.operationResults.keys().next().value!); } return result; };
     if (cmd.type === 'object:lease') {
       currentLeases(room);
+      if (new Set(cmd.ids).size !== cmd.ids.length) return fail('Lease selection contains duplicate object IDs.');
       if (cmd.action === 'acquire') {
-        if (cmd.ids.some(id => room.leases.has(id) && room.leases.get(id)!.userId !== userId)) return fail('One or more selected objects is being edited by someone else.');
         if (cmd.ids.some(id => !room.document.objects.some(object => object.id === id))) return fail('One or more selected objects is missing. Refresh and retry.');
+        if (cmd.ids.some(id => { const lease = room.leases.get(id); return lease && (lease.userId !== userId || lease.leaseId !== cmd.leaseId); })) return fail('One or more selected objects is being edited by someone else.');
         for (const id of cmd.ids) room.leases.set(id, { leaseId: cmd.leaseId, userId, expiresAt: Date.now() + 15_000 });
       } else if (cmd.action === 'renew') {
         if (cmd.ids.some(id => { const lease = room.leases.get(id); return !lease || lease.leaseId !== cmd.leaseId || lease.userId !== userId; })) return fail('Edit lease expired. Refresh and retry.');
@@ -333,34 +350,42 @@ export async function createAppServer(options: ServerOptions = {}) {
       room.points++; totalPoints++;
       syncLegacyDocument(room);
       publish(room, { type: 'stroke:begin', stroke });
-      return ok;
+      return remember(ok);
     }
     if (cmd.type === 'history:undo') {
       if (room.documentMode && room.documentHistory.undo.length) {
         const transaction = room.documentHistory.undo.at(-1)!;
-        const result = applyDocumentCommand(room.document, room.documentHistory, cmd, userId);
-        room.document = result.document; room.documentHistory = result.history;
-        syncStrokesAfterDocumentHistory(room, transaction, 'before');
-        publishDocument(room, { document: room.document, history: room.documentHistory, transaction });
-        return ok;
+        try {
+          const result = applyDocumentCommand(room.document, room.documentHistory, cmd, userId);
+          room.document = result.document; room.documentHistory = result.history;
+          syncStrokesAfterDocumentHistory(room, transaction, 'before');
+          publishDocument(room, { document: room.document, history: room.documentHistory, transaction: result.transaction });
+          return remember(ok);
+        } catch (error) {
+          return fail(error instanceof Error ? error.message : 'Undo was rejected. Refresh and retry.');
+        }
       }
       let latest: Stroke | undefined;
       for (const stroke of room.strokes.values()) if (stroke.active && stroke.completed && (!latest || stroke.completionOrder! > latest.completionOrder!)) latest = stroke;
       if (latest) { latest.active = false; room.redoIds.push(latest.id); syncLegacyDocument(room); publish(room, { type: 'history:undo', id: latest.id }); }
-      return ok;
+      return remember(ok);
     }
     if (cmd.type === 'history:redo') {
       if (room.documentMode && room.documentHistory.redo.length) {
         const transaction = room.documentHistory.redo.at(-1)!;
-        const result = applyDocumentCommand(room.document, room.documentHistory, cmd, userId);
-        room.document = result.document; room.documentHistory = result.history;
-        syncStrokesAfterDocumentHistory(room, transaction, 'after');
-        publishDocument(room, { document: room.document, history: room.documentHistory, transaction });
-        return ok;
+        try {
+          const result = applyDocumentCommand(room.document, room.documentHistory, cmd, userId);
+          room.document = result.document; room.documentHistory = result.history;
+          syncStrokesAfterDocumentHistory(room, transaction, 'after');
+          publishDocument(room, { document: room.document, history: room.documentHistory, transaction: result.transaction });
+          return remember(ok);
+        } catch (error) {
+          return fail(error instanceof Error ? error.message : 'Redo was rejected. Refresh and retry.');
+        }
       }
       const id = room.redoIds.pop();
       if (id) { room.strokes.get(id)!.active = true; syncLegacyDocument(room); publish(room, { type: 'history:redo', id }); }
-      return ok;
+      return remember(ok);
     }
     if (!cmd.type.startsWith('stroke:')) return fail('This document command is not available in the legacy room.');
     const strokeCommand = cmd as StrokeCommand;
@@ -369,7 +394,7 @@ export async function createAppServer(options: ServerOptions = {}) {
     if (strokeCommand.type === 'stroke:points') {
       if (strokeCommand.offset < stroke.points.length) {
         const exact = strokeCommand.offset + strokeCommand.points.length <= stroke.points.length && strokeCommand.points.every((p, index) => { const prior = stroke.points[strokeCommand.offset + index]!; return prior.x === p.x && prior.y === p.y; });
-        return exact ? ok : fail('Point batch conflicts with accepted points.');
+        return exact ? remember(ok) : fail('Point batch conflicts with accepted points.');
       }
       if (stroke.completed) return fail('Stroke has already finished.');
       if (strokeCommand.offset !== stroke.points.length) return fail('Point batch is out of order. Resync the room.');
@@ -377,10 +402,10 @@ export async function createAppServer(options: ServerOptions = {}) {
       stroke.points.push(...strokeCommand.points); room.points += strokeCommand.points.length; totalPoints += strokeCommand.points.length;
       syncLegacyDocument(room);
       publish(room, { type: 'stroke:points', id: strokeCommand.id, offset: strokeCommand.offset, points: strokeCommand.points });
-      return ok;
+      return remember(ok);
     }
     if (strokeCommand.type === 'stroke:end') {
-      if (stroke.completed) return ok;
+      if (stroke.completed) return remember(ok);
       stroke.completed = true; stroke.completionOrder = ++room.nextCompletion;
       room.unfinished.delete(userId);
       for (const id of room.redoIds) discard(room, id);
@@ -389,11 +414,11 @@ export async function createAppServer(options: ServerOptions = {}) {
       const transaction = room.documentMode ? transactionForStroke(room, stroke) : undefined;
       if (transaction) { room.documentHistory = { undo: [...room.documentHistory.undo, transaction], redo: [] }; publishDocument(room, { document: room.document, history: room.documentHistory, transaction }); }
       else publish(room, { type: 'stroke:end', id: strokeCommand.id, completionOrder: stroke.completionOrder });
-      return ok;
+      return remember(ok);
     }
     if (stroke.completed) return fail('Completed strokes cannot be cancelled.');
     cancel(room, userId);
-    return ok;
+    return remember(ok);
   }
   io.on('connection', socket => {
     const pending = { packets: 0, bytes: 0 };
@@ -448,7 +473,7 @@ export async function createAppServer(options: ServerOptions = {}) {
       if (next?.managed && !wantsHost && next.status === 'ended') { reply(fail('This session has ended.')); return; }
       if ((!next && rooms.size >= limits.rooms) || (next && next.users.size >= limits.usersPerRoom && next.hostSocketId !== socket.id)) { reply(fail('This room or server is full.')); return; }
       if (!next) {
-        next = { id: roomId, epoch: randomUUID(), revision: 0, nextOrder: 0, nextCompletion: 0, strokes: new Map(), usedIds: new Set(), users: new Map(), unfinished: new Map(), redoIds: [], points: 0, document: createDocument(randomUUID(), roomId), documentHistory: createHistory(), operationResults: new Map(), leases: new Map(), assets: new Map(), hiddenInkIds: new Set(), managed: wantsHost, hostSocketId: null, hostCapability: randomUUID(), status: 'active', hostWatermark: null, documentMode: false };
+        next = { id: roomId, epoch: randomUUID(), revision: 0, nextOrder: 0, nextCompletion: 0, strokes: new Map(), usedIds: new Set(), users: new Map(), unfinished: new Map(), redoIds: [], points: 0, document: createDocument(randomUUID(), roomId), documentHistory: createHistory(), operationResults: new Map(), leases: new Map(), assets: new Map(), hiddenInkIds: new Set(), managed: wantsHost, hostSocketId: null, hostCapability: randomUUID(), status: 'active', hostWatermark: null, documentMode: true };
         rooms.set(roomId, next);
       }
       if (room) { releaseLeases(room, socket.id); leave(socket, room); }

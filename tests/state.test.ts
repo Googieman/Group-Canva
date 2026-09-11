@@ -101,4 +101,16 @@ describe('authoritative client state', () => {
     const ink = state.document?.objects.find(object => object.id === 's1');
     expect(ink).toMatchObject({ translation: { x: 10, y: 5 }, points: [{ x: -9, y: -3 }] });
   });
+
+  it('keeps an unfinished streamed stroke out of the committed document while rendering it as a live stroke', () => {
+    const committed = legacyStrokesToDocument([{ ...stroke, completed: true, completionOrder: 1 }], 'doc-1');
+    const state = new DrawingState();
+    state.hydrate({ ...snapshot(), document: committed, documentHistory: createHistory() });
+    expect(state.receive(begin())).toBe('applied');
+    expect(state.strokes).toHaveLength(1);
+    expect(state.strokes[0]?.completed).toBe(false);
+    expect(state.document?.objects).toEqual([]);
+    expect(state.documentHistory?.undo).toEqual([]);
+    expect(state.canUndo).toBe(false);
+  });
 });

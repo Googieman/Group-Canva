@@ -92,8 +92,8 @@ export type DocumentCommand =
   | { type: 'object:resize'; id: string; width: number; height: number; expectedVersion: number; preserveAspectRatio?: boolean; leaseId?: string; operationId?: string }
   | { type: 'object:text'; id: string; text: string; expectedVersion: number; leaseId?: string; operationId?: string }
   | { type: 'object:delete'; ids: string[]; expectedVersions: Record<string, number>; leaseId?: string; operationId?: string }
-  | { type: 'history:undo'; operationId?: string }
-  | { type: 'history:redo'; operationId?: string };
+  | { type: 'history:undo'; expectedVersions?: Record<string, number>; operationId?: string }
+  | { type: 'history:redo'; expectedVersions?: Record<string, number>; operationId?: string };
 
 export interface LeaseCommand {
   type: 'object:lease'; ids: string[]; leaseId: string; action: 'acquire' | 'renew' | 'release';
@@ -233,19 +233,58 @@ function applyPatches(document: CanvasDocument, patches: ObjectPatch[], directio
   return nextDocument;
 }
 
+function equivalentObject(left: CanvasObject | null | undefined, right: CanvasObject | null | undefined): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+export function applyHistoryTransaction(
+  inputDocument: CanvasDocument,
+  inputHistory: DocumentHistory,
+  inputTransaction: Transaction,
+  direction: 'before' | 'after',
+  expectedVersions: Record<string, number> = {},
+): DocumentCommandResult {
+  const document = clone(inputDocument);
+  const history = { undo: clone(inputHistory.undo), redo: clone(inputHistory.redo) };
+  const transaction = clone(inputTransaction);
+  assertDocument(document);
+  const source = direction === 'before' ? history.undo : history.redo;
+  const target = direction === 'before' ? history.redo : history.undo;
+  if (source.at(-1)?.id !== transaction.id) throw new Error('History changed while it was being edited. Refresh and retry.');
+
+  const currentById = new Map(document.objects.map(object => [object.id, object]));
+  for (const patch of transaction.patches) {
+    const current = currentById.get(patch.id);
+    const expectedCurrent = direction === 'before' ? patch.after : patch.before;
+    const expectedVersion = expectedVersions[patch.id];
+    if (expectedVersion !== undefined && (!current || current.version !== expectedVersion)) {
+      throw new Error('Object changed while it was being edited. Refresh and retry.');
+    }
+    if (!equivalentObject(current, expectedCurrent)) {
+      throw new Error('Object changed while it was being edited. Refresh and retry.');
+    }
+  }
+
+  const nextDocument = applyPatches(document, transaction.patches, direction);
+  const nextHistory: DocumentHistory = direction === 'before'
+    ? { undo: source.slice(0, -1), redo: [...target, transaction] }
+    : { undo: [...target, transaction], redo: source.slice(0, -1) };
+  return { document: nextDocument, history: nextHistory, transaction };
+}
+
 export function applyDocumentCommand(inputDocument: CanvasDocument, inputHistory: DocumentHistory, command: DocumentCommand, authorId = 'local'): DocumentCommandResult {
   const document = clone(inputDocument);
   const history = { undo: clone(inputHistory.undo), redo: clone(inputHistory.redo) };
   assertDocument(document);
   if (command.type === 'history:undo') {
-    const transaction = history.undo.pop();
+    const transaction = history.undo.at(-1);
     if (!transaction) return { document, history };
-    return { document: applyPatches(document, transaction.patches, 'before'), history: { ...history, redo: [...history.redo, transaction] } };
+    return applyHistoryTransaction(document, history, transaction, 'before', command.expectedVersions);
   }
   if (command.type === 'history:redo') {
-    const transaction = history.redo.pop();
+    const transaction = history.redo.at(-1);
     if (!transaction) return { document, history };
-    return { document: applyPatches(document, transaction.patches, 'after'), history: { ...history, undo: [...history.undo, transaction] } };
+    return applyHistoryTransaction(document, history, transaction, 'after', command.expectedVersions);
   }
 
   let nextDocument = document;
@@ -309,7 +348,7 @@ export function applyDocumentCommand(inputDocument: CanvasDocument, inputHistory
 
 export function legacyStrokesToDocument(strokes: Stroke[], id: string, title = 'Untitled canvas'): CanvasDocument {
   const document = createDocument(id, title);
-  document.objects = nextObjectList(strokes.map(stroke => ({
+  document.objects = nextObjectList(strokes.filter(stroke => stroke.completed && stroke.active).map(stroke => ({
     id: stroke.id, type: 'ink', userId: stroke.userId, order: stroke.order, version: 1, translation: { x: 0, y: 0 },
     tool: stroke.tool, color: stroke.color, width: stroke.width, points: clone(stroke.points),
     completed: stroke.completed, completionOrder: stroke.completionOrder, active: stroke.active,

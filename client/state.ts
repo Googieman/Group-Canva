@@ -30,12 +30,16 @@ export class DrawingState {
     if (c.type === 'document:transaction') {
       if (!this.document || c.document.id !== this.document.id) return this.requireSnapshot(event);
       this.document = structuredClone(c.document);
-      this.redoIds = [];
       this.documentHistory = c.history ? structuredClone(c.history) : {
         undo: c.transaction ? [...(this.documentHistory?.undo ?? []), structuredClone(c.transaction)] : [...(this.documentHistory?.undo ?? [])],
         redo: [],
       };
-      this.strokes = this.documentToStrokes();
+      const committed = this.documentToStrokes();
+      const committedById = new Map(committed.map(stroke => [stroke.id, stroke]));
+      const retained = this.strokes.map(stroke => committedById.get(stroke.id) ?? (stroke.completed ? { ...stroke, active: false } : stroke));
+      for (const stroke of committed) if (!retained.some(candidate => candidate.id === stroke.id)) retained.push(stroke);
+      this.strokes = retained.sort((a, b) => a.order - b.order);
+      this.redoIds = this.documentHistory.redo.flatMap(transaction => transaction.patches.map(patch => patch.id));
       this.revision = event.revision;
       return 'applied';
     }
@@ -61,7 +65,7 @@ export class DrawingState {
       if (replacement) this.strokes = this.strokes.map(s => s.id === c.id ? replacement! : s);
     }
     if (this.document) {
-      const legacy = legacyStrokesToDocument(this.strokes, this.document.id, this.document.title);
+      const legacy = legacyStrokesToDocument(this.strokes.filter(stroke => stroke.completed && stroke.active), this.document.id, this.document.title);
       const nonInk = this.document.objects.filter(object => object.type !== 'ink');
       const priorInk = new Map(this.document.objects.filter((object): object is Extract<CanvasDocument['objects'][number], { type: 'ink' }> => object.type === 'ink').map(object => [object.id, object]));
       const ink = legacy.objects.map(object => {

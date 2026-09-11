@@ -276,6 +276,51 @@ describe('authoritative websocket collaboration', () => {
     expect(await command(b, { type:'object:lease', ids:['leased-shape'], leaseId:'lease-b', action:'acquire' } as Command)).toEqual({ ok:true });
   });
 
+  it('acquires a multi-object lease atomically and rejects every conflicting member', async () => {
+    const server = await start();
+    const a = (await connect(server.url)).socket;
+    const b = (await connect(server.url)).socket;
+    for (const id of ['lease-one', 'lease-two']) {
+      await command(a, { type: 'object:create', object: { id, type: 'shape', order: 1, version: 1, translation: { x: 10, y: 10 }, shape: 'rectangle', width: 20, height: 20, strokeColor: '#000000', strokeWidth: 2, fill: null } });
+    }
+    expect(await command(a, { type: 'object:lease', ids: ['lease-one', 'lease-two'], leaseId: 'lease-a', action: 'acquire' } as Command)).toEqual({ ok: true });
+    expect(await command(b, { type: 'object:lease', ids: ['lease-one', 'lease-two'], leaseId: 'lease-b', action: 'acquire' } as Command)).toMatchObject({ ok: false });
+    const before = await resync(a);
+    expect(await command(b, { type: 'object:move', ids: ['lease-one', 'lease-two'], delta: { x: 5, y: 0 }, expectedVersions: { 'lease-one': 1, 'lease-two': 1 }, leaseId: 'lease-b' })).toMatchObject({ ok: false });
+    const after = await resync(a);
+    expect(after.revision).toBe(before.revision);
+    expect(after.document?.objects.map(object => object.translation.x)).toEqual(before.document?.objects.map(object => object.translation.x));
+  });
+
+  it('rejects reused operation IDs with a different body and evicts old results at the configured bound', async () => {
+    const server = await start({ limits: { operationResultsPerRoom: 2 } });
+    const a = (await connect(server.url)).socket;
+    const shape = (id: string) => ({ id, type: 'shape' as const, order: 1, version: 1, translation: { x: 10, y: 10 }, shape: 'rectangle' as const, width: 20, height: 20, strokeColor: '#000000', strokeWidth: 2, fill: null });
+    expect(await command(a, { type: 'object:create', object: shape('dedup-one'), operationId: 'same-id' })).toEqual({ ok: true });
+    expect(await command(a, { type: 'object:create', object: shape('dedup-two'), operationId: 'same-id' })).toMatchObject({ ok: false, error: expect.stringContaining('operation ID') });
+    expect(await command(a, { type: 'object:create', object: shape('dedup-three'), operationId: 'evict-one' })).toEqual({ ok: true });
+    expect(await command(a, { type: 'object:create', object: shape('dedup-four'), operationId: 'evict-two' })).toEqual({ ok: true });
+    expect(await command(a, { type: 'object:create', object: shape('dedup-five'), operationId: 'same-id' })).toEqual({ ok: true });
+    const state = await resync(a);
+    expect(state.document?.objects.map(object => object.id)).toEqual(['dedup-one', 'dedup-three', 'dedup-four', 'dedup-five']);
+  });
+
+  it('makes completed stroke transactions idempotent and keeps duplicate point batches revision-free', async () => {
+    const server = await start();
+    const a = (await connect(server.url)).socket;
+    expect(await command(a, { ...begin('operation-stroke'), operationId: 'begin-op' })).toEqual({ ok: true });
+    const batch = { type: 'stroke:points' as const, id: 'operation-stroke', offset: 1, points: [{ x: 20, y: 20 }], operationId: 'points-op' };
+    expect(await command(a, batch)).toEqual({ ok: true });
+    const afterBatch = await resync(a);
+    expect(await command(a, batch)).toEqual({ ok: true });
+    expect((await resync(a)).revision).toBe(afterBatch.revision);
+    expect(await command(a, { type: 'stroke:end', id: 'operation-stroke', operationId: 'end-op' })).toEqual({ ok: true });
+    const afterEnd = await resync(a);
+    expect(await command(a, { type: 'stroke:end', id: 'operation-stroke', operationId: 'end-op' })).toEqual({ ok: true });
+    expect((await resync(a)).revision).toBe(afterEnd.revision);
+    expect((await resync(a)).documentHistory?.undo).toHaveLength(1);
+  });
+
   it('keeps legacy strokes and object transactions in one mixed undo order', async () => {
     const server = await start();
     const a = (await connect(server.url)).socket;

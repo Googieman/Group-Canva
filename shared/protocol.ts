@@ -28,10 +28,10 @@ export interface Snapshot {
 }
 export interface AssetMeta { id: string; mimeType: 'image/png' | 'image/jpeg' | 'image/webp'; width: number; height: number; byteLength: number }
 export type StrokeCommand =
-  | { type: 'stroke:begin'; id: string; tool: Tool; color: string; width: number; point: Point }
-  | { type: 'stroke:points'; id: string; offset: number; points: Point[] }
-  | { type: 'stroke:end'; id: string }
-  | { type: 'stroke:cancel'; id: string };
+  | { type: 'stroke:begin'; id: string; tool: Tool; color: string; width: number; point: Point; operationId?: string }
+  | { type: 'stroke:points'; id: string; offset: number; points: Point[]; operationId?: string }
+  | { type: 'stroke:end'; id: string; operationId?: string }
+  | { type: 'stroke:cancel'; id: string; operationId?: string };
 export type Command = StrokeCommand | DocumentCommand | LeaseCommand;
 export type Change =
   | { type: 'stroke:begin'; stroke: Stroke }
