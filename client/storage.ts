@@ -18,6 +18,8 @@ export interface LocalFile {
   assets: StoredAsset[];
   revision: number;
   roomEpoch: string | null;
+  /** Host-only recovery credential; never included in project exports or invite URLs. */
+  hostCapability?: string;
   camera: { x: number; y: number; zoom: number };
 }
 
@@ -141,7 +143,7 @@ export class CanvasStorage {
     const source = await this.getFile(sourceId);
     if (!source) throw new Error('Canvas file not found.');
     const now = Date.now();
-    const duplicate: LocalFile = { ...copy(source), id: duplicateId, createdAt: now, updatedAt: now, document: { ...copy(source.document), id: randomId('document') }, roomEpoch: null, revision: 0 };
+        const duplicate: LocalFile = { ...copy(source), id: duplicateId, createdAt: now, updatedAt: now, document: { ...copy(source.document), id: randomId('document') }, roomEpoch: null, hostCapability: undefined, revision: 0 };
     await this.saveFile(duplicate);
     return duplicate;
   }

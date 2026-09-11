@@ -25,6 +25,11 @@ export function resolveSocketEndpoint(): string | undefined {
   if (typeof window !== 'undefined' && window.location.hostname === 'group-canva.pages.dev') return 'https://group-canvas.onrender.com';
   return undefined;
 }
+export function medianLatency(samples: readonly number[]): number | null {
+  if (!samples.length) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? null;
+}
 export class Connection {
   private socket: Socket<ServerEvents, ClientEvents>;
   private resyncPending = false;
@@ -37,6 +42,7 @@ export class Connection {
   private pingSamples: number[] = [];
   private roomPaused = false;
   private assetToken: string | undefined;
+  private assetIds = new Set<string>();
   private everHydrated = false;
   private failed = false;
   constructor(readonly state: DrawingState, private readonly roomId: string, private readonly name: string, private callbacks: Callbacks, private readonly options: ConnectionOptions = {}) {
@@ -63,6 +69,7 @@ export class Connection {
       if (snapshot.protocolVersion !== undefined && snapshot.protocolVersion !== 2) { callbacks.error('This session uses an incompatible Group Canvas version. Update and try again.'); this.socket.disconnect(); return; }
       this.roomPaused = snapshot.roomStatus === 'paused' || snapshot.roomStatus === 'ended';
       this.assetToken = snapshot.assetToken;
+      this.assetIds = new Set(snapshot.assets?.map(asset => asset.id) ?? []);
       if (snapshot.hostCapability && this.options.host) this.options.hostCapability = snapshot.hostCapability;
       if (!state.hydrate(snapshot)) { this.resync(); return; }
       this.everHydrated = true;
@@ -169,6 +176,7 @@ export class Connection {
     try {
       const response = await fetch(`${base}/api/rooms/${encodeURIComponent(this.roomId)}/assets`, { method: 'POST', headers: { 'content-type': asset.mimeType, 'x-room-token': this.assetToken, 'x-asset-id': asset.id }, body: asset.bytes });
       if (!response.ok) { const value = await response.json().catch(() => ({})) as { error?: string }; return { ok: false, error: value.error ?? 'The image could not be uploaded.' }; }
+      this.assetIds.add(asset.id);
       return { ok: true };
     } catch { return { ok: false, error: 'The image could not be uploaded.' }; }
   }
@@ -184,7 +192,7 @@ export class Connection {
 
   restoreHost(document: CanvasDocument, assets: Array<{ id: string; mimeType: string; bytes: ArrayBuffer }>, capability: string): Promise<Result> {
     return (async () => {
-      for (const asset of assets) { const result = await this.uploadAsset(asset); if (!result.ok) return result; }
+      for (const asset of assets) { if (this.assetIds.has(asset.id)) continue; const result = await this.uploadAsset(asset); if (!result.ok) return result; }
       return new Promise<Result>(resolve => this.socket.emit('room:host-restore', { capability, document }, resolve));
     })();
   }
@@ -208,9 +216,8 @@ export class Connection {
       this.pingOutstanding = false;
       if (error) { this.callbacks.ping?.('Ping unavailable'); return; }
       this.pingSamples = [...this.pingSamples, Math.max(0, performance.now() - started)].slice(-5);
-      const sorted = [...this.pingSamples].sort((a, b) => a - b);
-      const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
-      this.callbacks.ping?.(`Ping ${Math.round(median)} ms`);
+      const median = medianLatency(this.pingSamples);
+      this.callbacks.ping?.(median === null ? 'Ping unavailable' : `Ping ${Math.round(median)} ms`);
     });
   }
 

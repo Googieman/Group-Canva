@@ -15,7 +15,11 @@ export async function readImageFile(file: File): Promise<{ asset: StoredAsset; s
   if (file.size > MAX_ASSET_BYTES) throw new Error('Images must be 5 MiB or smaller.');
   const bytes = await file.arrayBuffer();
   if (file.type === 'image/png' && !validateImageBytes(file.type, bytes, new DataView(bytes).byteLength >= 24 ? new DataView(bytes).getUint32(16) : 0, new DataView(bytes).byteLength >= 24 ? new DataView(bytes).getUint32(20) : 0)) throw new Error('This image has an invalid PNG signature.');
-  const source = typeof createImageBitmap === 'function' ? await createImageBitmap(file) : await loadImage(file);
+  let source: CanvasImageSource;
+  if (typeof createImageBitmap === 'function') {
+    try { source = await createImageBitmap(file); }
+    catch { source = await loadImage(file); }
+  } else source = await loadImage(file);
   const asset: StoredAsset = { id: `asset-${crypto.randomUUID()}`, mimeType: file.type as StoredAsset['mimeType'], width: source.width, height: source.height, bytes };
   if (!validateImageBytes(asset.mimeType, bytes, asset.width, asset.height) || !validAsset(asset)) { if ('close' in source && typeof source.close === 'function') source.close(); throw new Error('Image dimensions or data exceed the project limits.'); }
   return { asset, source };
@@ -23,7 +27,10 @@ export async function readImageFile(file: File): Promise<{ asset: StoredAsset; s
 
 export async function decodeImageAsset(asset: Pick<StoredAsset, 'mimeType' | 'bytes'>): Promise<CanvasImageSource> {
   const blob = new Blob([asset.bytes], { type: asset.mimeType });
-  if (typeof createImageBitmap === 'function') return createImageBitmap(blob);
+  if (typeof createImageBitmap === 'function') {
+    try { return await createImageBitmap(blob); }
+    catch { /* Fall back to the browser image decoder below. */ }
+  }
   return loadImage(blob);
 }
 

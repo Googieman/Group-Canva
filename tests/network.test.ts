@@ -1,8 +1,14 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { Connection } from '../client/network';
+import { Connection, medianLatency } from '../client/network';
 import { DrawingState } from '../client/state';
 import { createAppServer } from '../server/app';
 import type { Result, Snapshot } from '../shared/protocol';
+
+it('calculates the median from the latest monotonic latency samples', () => {
+  expect(medianLatency([])).toBeNull();
+  expect(medianLatency([31, 12, 24, 8, 40])).toBe(24);
+  expect(medianLatency([31, 12, 24, 8, 40, 5])).toBe(24);
+});
 
 const servers: Awaited<ReturnType<typeof createAppServer>>[] = [];
 const connections: Connection[] = [];

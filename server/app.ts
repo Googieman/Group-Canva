@@ -256,7 +256,7 @@ export async function createAppServer(options: ServerOptions = {}) {
     const wasHost = room.hostSocketId === socket.id;
     revokeAssetTokens(socket.id);
     room.users.delete(socket.id);
-    if (wasHost && room.managed && room.status === 'active') {
+    if (wasHost && room.managed && room.hostSocketId === socket.id) {
       room.hostSocketId = null;
       room.status = 'paused';
       announceStatus(room, 'The host disconnected. Editing is paused while the host reconnects.');
@@ -443,7 +443,7 @@ export async function createAppServer(options: ServerOptions = {}) {
       tokens--; return true;
     }
     function sendSnapshot() {
-      if (!room) return;
+      if (!room || rooms.get(room.id) !== room) return;
       const remaining = 250 - (Date.now() - lastSnapshot);
       if (remaining > 0) {
         snapshotTimer ??= setTimeout(() => { snapshotTimer = undefined; sendSnapshot(); }, remaining);
@@ -455,6 +455,7 @@ export async function createAppServer(options: ServerOptions = {}) {
     }
     socket.on('room:join', (request: unknown, ack) => {
       const reply = (result: Result) => { if (typeof ack === 'function') ack(result); };
+      if (room && rooms.get(room.id) !== room) room = undefined;
       if (!token()) { reply(fail('Too many requests.')); return; }
       if (!record(request)) { reply(fail('Invalid room request.')); return; }
       const roomId = request.roomId ?? DEFAULT_ROOM;
@@ -479,13 +480,13 @@ export async function createAppServer(options: ServerOptions = {}) {
       if (room) { releaseLeases(room, socket.id); leave(socket, room); }
       clearTimeout(next.expires); delete next.expires;
       room = next; lastJoin = Date.now(); lastSnapshot = 0;
-      if (room.managed && wantsHost) { clearTimeout(room.hostGrace); delete room.hostGrace; room.hostSocketId = socket.id; room.status = 'active'; room.hostWatermark = room.hostWatermark ?? { epoch: room.epoch, revision: room.revision }; }
+      if (room.managed && wantsHost) { clearTimeout(room.hostGrace); delete room.hostGrace; room.hostSocketId = socket.id; room.status = 'paused'; room.hostWatermark = room.hostWatermark ?? { epoch: room.epoch, revision: room.revision }; }
       room.users.set(socket.id, { id: socket.id, name: name.trim(), color: COLORS[room.users.size % COLORS.length]! });
       issueAssetToken(room, socket.id);
       socket.join(`canvas:${room.id}`);
       sendSnapshot();
       io.to(`canvas:${room.id}`).emit('presence:update', [...room.users.values()]);
-      if (room.managed && wantsHost) announceStatus(room, 'The host is connected. Editing has resumed.');
+      if (room.managed && wantsHost) announceStatus(room, 'The host is connected. Restoring the saved canvas…');
       reply(ok);
     });
     socket.on('command', (value: unknown, ack) => {

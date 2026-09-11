@@ -347,6 +347,8 @@ describe('authoritative websocket collaboration', () => {
   it('stores image assets behind participant tokens and exposes only validated metadata', async () => {
     const server = await start();
     const peer = await connect(server.url);
+    const events: DrawingEvent[] = [];
+    peer.socket.on('drawing:event', event => events.push(event));
     expect(peer.snapshot.assetToken).toEqual(expect.any(String));
     const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1]);
     const headers = { 'content-type': 'image/png', 'x-room-token': peer.snapshot.assetToken!, 'x-asset-id': 'pixel' };
@@ -358,10 +360,18 @@ describe('authoritative websocket collaboration', () => {
     expect([...new Uint8Array(await download.arrayBuffer())]).toEqual([...png]);
     const unauthorized = await fetch(`${server.url}/api/rooms/playground/assets/pixel`);
     expect(unauthorized.status).toBe(401);
+    const duplicate = await fetch(`${server.url}/api/rooms/playground/assets`, { method: 'POST', headers, body: png });
+    expect(duplicate.status).toBe(409);
+    const wrongRoom = await fetch(`${server.url}/api/rooms/other/assets/pixel`, { headers: { 'x-room-token': peer.snapshot.assetToken! } });
+    expect(wrongRoom.status).toBe(401);
+    const invalid = await fetch(`${server.url}/api/rooms/playground/assets`, { method: 'POST', headers: { ...headers, 'x-asset-id': 'invalid' }, body: new Uint8Array([1, 2, 3]) });
+    expect(invalid.status).toBe(400);
+    expect(events).toEqual([]);
+    expect((await resync(peer.socket)).document?.objects).toEqual([]);
   });
 
   it('pauses managed rooms for host recovery and rejects stale host operations', async () => {
-    const server = await start({ limits: { hostGraceMs: 80 } });
+    const server = await start({ limits: { hostGraceMs: 1000 } });
     const host = io(server.url, { transports: ['websocket'], reconnection: false });
     const guest = io(server.url, { transports: ['websocket'], reconnection: false });
     clients.push(host, guest);
@@ -380,7 +390,12 @@ describe('authoritative websocket collaboration', () => {
     await new Promise<void>((resolve, reject) => { recovered.once('connect', resolve); recovered.once('connect_error', reject); });
     const recoveredSnapshotPromise = snapshotNext(recovered as Client);
     expect(await new Promise<Result>(resolve => recovered.emit('room:join', { roomId: 'managed', name: 'Host again', host: true, hostCapability: hostSnapshot.hostCapability }, resolve))).toEqual({ ok: true });
-    expect((await recoveredSnapshotPromise).roomStatus).toBe('active');
+    expect((await recoveredSnapshotPromise).roomStatus).toBe('paused');
+    expect(await command(guest as Client, begin('paused-after-reconnect'))).toMatchObject({ ok: false, error: expect.stringContaining('paused') });
+    const restoredSnapshotPromise = snapshotNext(recovered as Client);
+    const restored = await new Promise<Result>(resolve => recovered.emit('room:host-restore', { capability: hostSnapshot.hostCapability, document: hostSnapshot.document }, resolve));
+    expect(restored).toEqual({ ok: true });
+    expect((await restoredSnapshotPromise).roomStatus).toBe('active');
     const ended = new Promise<{ status: string }>(resolve => guest.on('room:status', status => { if (status.status === 'ended') resolve(status); }));
     expect(await new Promise<Result>(resolve => recovered.emit('room:end', { capability: hostSnapshot.hostCapability }, resolve))).toEqual({ ok: true });
     expect((await ended).status).toBe('ended');
