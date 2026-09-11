@@ -44,7 +44,7 @@ export function orderedVisibleStrokes(strokes: Stroke[]): Stroke[] {
   return strokes.filter(stroke => stroke.active).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
 }
 
-function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, cachedPath?: Path2D): void {
+export function renderInkStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, cachedPath?: Path2D): void {
   if (!stroke.points.length) return;
   ctx.globalCompositeOperation = stroke.tool === 'eraser' ? 'destination-out' : 'source-over';
   ctx.lineWidth = stroke.width;
@@ -145,7 +145,7 @@ function setWorldTransform(ctx: CanvasRenderingContext2D, dpr: number, camera: C
 
 function setDefaultWorldTransform(ctx: CanvasRenderingContext2D, dpr: number): void { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
 
-export function renderDocumentObject(ctx: CanvasRenderingContext2D, object: CanvasObject, assets: Map<string, CanvasImageSource>, fontReady = true): void {
+export function renderDocumentObject(ctx: CanvasRenderingContext2D, object: CanvasObject, assets: ReadonlyMap<string, CanvasImageSource>, fontReady = true): void {
   const x = object.translation.x, y = object.translation.y;
   ctx.globalCompositeOperation = 'source-over';
   if (object.type === 'shape') {
@@ -184,7 +184,7 @@ export function renderDocumentObject(ctx: CanvasRenderingContext2D, object: Canv
   }
 }
 
-function drawObject(ctx: CanvasRenderingContext2D, object: CanvasObject, assets: Map<string, CanvasImageSource>, fontReady = true): void {
+function drawObject(ctx: CanvasRenderingContext2D, object: CanvasObject, assets: ReadonlyMap<string, CanvasImageSource>, fontReady = true): void {
   renderDocumentObject(ctx, object, assets, fontReady);
 }
 
@@ -614,7 +614,7 @@ export class CanvasBoard {
     setDefaultWorldTransform(this.cacheContext, this.dpr);
     for (let i = this.cachedPrefix.length; i < stableCount; i++) {
       const stroke = this.strokes[i];
-      drawStroke(this.cacheContext, stroke, this.pathFor(stroke));
+      renderInkStroke(this.cacheContext, stroke, this.pathFor(stroke));
       // An ink snapshot also detects replacement snapshots and in-place edits.
       this.cachedPrefix.push({ ...stroke, points: stroke.points.map(point => ({ ...point })) });
     }
@@ -639,7 +639,7 @@ export class CanvasBoard {
         this.tailCacheContext.setTransform(1, 0, 0, 1, 0, 0);
         this.tailCacheContext.clearRect(0, 0, this.tailCache.width, this.tailCache.height);
         setDefaultWorldTransform(this.tailCacheContext, this.dpr);
-        for (const stroke of tail) drawStroke(this.tailCacheContext, stroke, this.pathFor(stroke));
+        for (const stroke of tail) renderInkStroke(this.tailCacheContext, stroke, this.pathFor(stroke));
         this.cachedTail = tail.map(stroke => ({ ...stroke, points: stroke.points.map(point => ({ ...point })) }));
       }
     }
@@ -678,7 +678,7 @@ export class CanvasBoard {
         }
         const stroke = this.strokes[i];
         const bounds = strokeBounds(stroke);
-        if (bounds && intersects(bounds, region)) drawStroke(this.context, stroke, this.pathFor(stroke));
+        if (bounds && intersects(bounds, region)) renderInkStroke(this.context, stroke, this.pathFor(stroke));
       }
       this.context.globalCompositeOperation = 'source-over';
       setDefaultWorldTransform(this.context, this.dpr);
@@ -711,7 +711,7 @@ export class CanvasBoard {
     this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.context.globalCompositeOperation = 'source-over';
     setWorldTransform(this.context, this.dpr, this.camera, this.viewport);
-    for (const stroke of this.strokes) { const bounds = strokeBounds(stroke); if (!bounds || intersects(bounds, view)) drawStroke(this.context, stroke, this.pathFor(stroke)); }
+    for (const stroke of this.strokes) { const bounds = strokeBounds(stroke); if (!bounds || intersects(bounds, view)) renderInkStroke(this.context, stroke, this.pathFor(stroke)); }
     this.context.globalCompositeOperation = 'source-over';
     const visibleObjectIds = new Set(this.objectIndex.query(view));
     for (const object of this.objects) { if (visibleObjectIds.has(object.id)) drawObject(this.context, object, this.assets, this.fontReady); }
