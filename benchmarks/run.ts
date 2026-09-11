@@ -16,6 +16,7 @@ if(!Number.isInteger(duration)||duration<1000||duration>60000||!Number.isInteger
 const rendererRef=process.env.BENCH_RENDERER_REF;
 const loadOnly=process.env.BENCH_PHASE==='load';
 const delayMs=Number(process.env.BENCH_DELAY_MS||0);
+const frontendUrl=process.env.BENCH_FRONTEND_URL?.replace(/\/$/,'');
 if(!Number.isInteger(delayMs)||delayMs<0||delayMs>500)throw new Error('Delay must be 0–500 ms per direction');
 if(delayMs&&process.env.BENCH_SERVER_URL)throw new Error('Use either an external server or local synthetic delay');
 // Re-run a committed renderer with exactly the same current workload and
@@ -45,8 +46,11 @@ const renders:unknown[]=[];const loads:unknown[]=[];const inputs:unknown[]=[];
 try {
   for(let rep=0;rep<repetitions;rep++) {
     const context=await browser.newContext({viewport:{width:1280,height:900},deviceScaleFactor:2});
-    const page=await context.newPage();await page.goto(`${url}benchmarks/render.html?diagnostics=1`);
-    await page.waitForFunction(()=>typeof (window as any).runCanvasBenchmark==='function');
+    const page=await context.newPage();
+    if (!frontendUrl || !loadOnly) {
+      await page.goto(`${url}benchmarks/render.html?diagnostics=1`);
+      await page.waitForFunction(()=>typeof (window as any).runCanvasBenchmark==='function');
+    }
     // Keep the original 300-stroke scenes and add an interval matrix for the
     // mixed tail. The matrix uses the same five-second (or configured)
     // duration and DPR 2 context for each repeat; diagnostics remain samples,
@@ -56,7 +60,7 @@ try {
       renders.push({rep,...result});console.log(JSON.stringify({phase:'renderer',rep,scenario,fps:result.fps,render:result.metrics.renderMs}));
     }
     const room=`bench-${Date.now()}`;
-    await page.goto(`${url}?diagnostics=1&room=${room}`);
+    await page.goto(`${frontendUrl ?? url}?diagnostics=1&room=${room}`);
     await page.waitForSelector('.connection[data-status=connected]');
     if(!loadOnly) {
     await page.evaluate(()=>window.canvasDiagnostics!.reset());
@@ -71,24 +75,32 @@ try {
     const peers=await Promise.all(Array.from({length:9},()=>connect(room)));
     const roundTrips:number[]=[];
     for(let i=0;i<10;i++){const at=performance.now();await command(peers[8],{type:'history:redo'});roundTrips.push(performance.now()-at);}
-    const observer=peers[8];const sent=new Map<string,number>();const received:number[]=[];let batches=0;
-    observer.on('drawing:event',(e:DrawingEvent)=>{if(e.change.type==='stroke:points'){const at=sent.get(`${e.change.id}:${e.change.offset}`);if(at!==undefined)received.push(performance.now()-at);}});
+    const observer=peers[8];const sentAt=new Map<string,number>();const received:number[]=[];let batches=0;
+    const receivedBatchCounts=new Map<string,number>();
+    observer.on('drawing:event',(e:DrawingEvent)=>{if(e.change.type==='stroke:points'){const id=`${e.change.id}:${e.change.offset}`;receivedBatchCounts.set(id,(receivedBatchCounts.get(id)??0)+1);const at=sentAt.get(id);if(at!==undefined)received.push(performance.now()-at);}});
     const ids=Array.from({length:5},(_,j)=>`load-${rep}-${j}`);
-    for(let j=0;j<5;j++)await command(peers[j],{type:'stroke:begin',id:ids[j],tool:j===4?'eraser':'brush',color:'#5446d4',width:6,point:{x:30,y:30}});
+    let ackFailures=0;
+    const checkedCommand=(socket:Socket,value:Command)=>command(socket,value).catch(()=>{ackFailures++;});
+    for(let j=0;j<5;j++)await checkedCommand(peers[j],{type:'stroke:begin',id:ids[j],tool:j===4?'eraser':'brush',color:'#5446d4',width:6,point:{x:30,y:30}});
     processing.length=0;await page.evaluate(()=>window.canvasDiagnostics!.reset());
     const loadStart=performance.now();let tick=0;const outstanding:Promise<void>[]=[];const intervals:number[]=[];let previous=loadStart;
     while(performance.now()-loadStart<duration) {
       const now=performance.now();intervals.push(now-previous);previous=now;
       for(let j=0;j<5;j++) {
-        const offset=1+tick*2;sent.set(`${ids[j]}:${offset}`,performance.now());batches++;
-        outstanding.push(command(peers[j],{type:'stroke:points',id:ids[j],offset,points:[{x:50+tick*2%1400,y:300+j*10},{x:51+tick*2%1400,y:301+j*10}]}));
+        const offset=1+tick*2;const id=`${ids[j]}:${offset}`;sentAt.set(id,performance.now());batches++;
+        outstanding.push(checkedCommand(peers[j],{type:'stroke:points',id:ids[j],offset,points:[{x:50+tick*2%1400,y:300+j*10},{x:51+tick*2%1400,y:301+j*10}]}));
       }
       tick++;await sleep(20);
     }
-    await Promise.all(outstanding);for(let j=0;j<5;j++)await command(peers[j],{type:'stroke:end',id:ids[j]});
-    await sleep(250);
+    await Promise.all(outstanding);for(let j=0;j<5;j++)await checkedCommand(peers[j],{type:'stroke:end',id:ids[j]});
+    // Allow observer delivery to drain independently of author acknowledgements.
+    await sleep(Math.min(5000,Math.max(1000,Math.ceil(duration*.1))));
     const visual=await page.evaluate(()=>window.canvasDiagnostics!.report());
-    loads.push({rep,clients:10,authors:5,batches,ticks:tick,durationMs:performance.now()-loadStart,received:received.length,propagationMs:summarize(received),roundTripMs:summarize(roundTrips),batchIntervalMs:summarize(intervals.slice(1)),serverProcessingMs:!process.env.BENCH_SERVER_URL?summarize(processing):null,observer:visual});
+    const expectedBatchIds=Array.from({length:5},(_,j)=>Array.from({length:tick},(_,i)=>`load-${rep}-${j}:${1+i*2}`)).flat();
+    const missingBatchIds=expectedBatchIds.filter(id=>!receivedBatchCounts.has(id));
+    const duplicateBatchIds=[...receivedBatchCounts].filter(([,count])=>count>1).map(([id,count])=>({id,count}));
+    const duplicateCount=duplicateBatchIds.reduce((sum,entry)=>sum+entry.count-1,0);
+    loads.push({rep,clients:10,authors:5,batches,ticks:tick,durationMs:performance.now()-loadStart,expected:expectedBatchIds.length,received:receivedBatchCounts.size,receivedEvents:[...receivedBatchCounts.values()].reduce((sum,count)=>sum+count,0),duplicates:duplicateCount,duplicateBatchIds,missing:missingBatchIds.length,missingBatchIds,ackFailures,propagationMs:summarize(received),roundTripMs:summarize(roundTrips),batchIntervalMs:summarize(intervals.slice(1)),serverProcessingMs:!process.env.BENCH_SERVER_URL?summarize(processing):null,observer:visual});
     console.log(JSON.stringify({phase:'ten-clients',rep,propagation:summarize(received),processing:summarize(processing),fps:visual.fps}));
     peers.forEach(p=>p.disconnect());await context.close();
   }

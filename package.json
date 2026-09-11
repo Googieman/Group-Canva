@@ -14,7 +14,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "benchmark": "tsx benchmarks/run.ts"
+    "benchmark": "tsx benchmarks/run.ts",
+    "verify:hosted": "tsx benchmarks/verify-hosted.ts"
   },
   "dependencies": {
     "express": "^5.1.0",

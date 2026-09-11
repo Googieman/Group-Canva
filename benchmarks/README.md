@@ -42,6 +42,30 @@ npm run benchmark -- delayed-local
 
 The delay fixture is a local TCP proxy adding 50 ms in each direction. Actual measured round-trip time is recorded; operating-system timers can exceed the requested delay. This is a synthetic transport profile, not a measurement of VS Code tunnels, international networks, packet loss, or native Safari. Duration is bounded to 1–60 seconds and repetitions to 1–20; use separate runs for longer observation periods so the MVP's intentional room/point limits remain meaningful.
 
+## Hosted frontend and backend
+
+For a hosted load run, point the rendered observer at the public Pages origin and point Socket.IO clients at the public Render origin:
+
+```powershell
+$env:BENCH_FRONTEND_URL='https://YOUR-PROJECT.pages.dev'
+$env:BENCH_SERVER_URL='https://YOUR-SERVICE.onrender.com'
+$env:BENCH_PHASE='load'
+$env:BENCH_DURATION_MS='60000'
+$env:BENCH_REPETITIONS='1'
+npm run benchmark -- hosted-load
+```
+
+`BENCH_FRONTEND_URL` changes only the rendered observer page; `BENCH_SERVER_URL` remains the Socket.IO target. Hosted load JSON records expected, unique received, duplicate, missing, and acknowledgement-failure counts. A bounded post-send drain is included before those counts are finalized. `serverProcessingMs` is `null` for an external backend and must not be inferred from client timings.
+
+Run the HTTPS, exact-origin, and WebSocket transport check separately:
+
+```powershell
+$env:E2E_BASE_URL=$env:BENCH_FRONTEND_URL
+npm run verify:hosted
+```
+
+The browser suite uses `E2E_BASE_URL` directly and does not start `npm start` when it is set. Renderer-fixture tests remain local because they start their own Vite fixture server.
+
 ## Remote tunnel comparison
 
 Use the same committed application on the tunnel host and run the benchmark from the collaborator's machine with an accessible backend URL:
