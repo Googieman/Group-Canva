@@ -36,3 +36,18 @@ test('a second local-file tab is read-only without disconnecting the writer', as
 
   await context.close();
 });
+
+test('home file actions preserve renamed content and duplicate/delete durable files', async ({ page }) => {
+  const { fileId } = await createLocalFile(page);
+  page.once('dialog', dialog => dialog.accept('Renamed idea'));
+  await page.getByRole('button', { name: 'Untitled canvas', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Renamed idea', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'My canvases', exact: true }).click();
+  const original = page.locator('.file-card').filter({ hasText: 'Renamed idea' }).first();
+  await original.getByRole('button', { name: 'Duplicate', exact: true }).click();
+  await expect(page.locator('.file-card')).toHaveCount(2);
+  page.once('dialog', dialog => dialog.accept());
+  await original.getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(page.locator('.file-card')).toHaveCount(1);
+  expect(fileId).toMatch(/^file-/);
+});

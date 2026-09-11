@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { exportProject, importProject, type ProjectFile } from '../client/projects';
 import { createDocument } from '../shared/document';
 
@@ -11,6 +11,15 @@ describe('editable project files', () => {
     const parsed = await importProject(await exportProject(project));
     expect(parsed.document).toEqual(project.document);
     expect([...new Uint8Array(parsed.assets[0]!.bytes)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1]);
+  });
+
+  it('rejects oversized encoded asset data before invoking the decoder', async () => {
+    const decoder = vi.fn(globalThis.atob);
+    vi.stubGlobal('atob', decoder);
+    const wire = JSON.stringify({ version: 1, document: createDocument('doc-oversized'), assets: [{ id: 'asset-1', mimeType: 'image/png', width: 1, height: 1, bytes: 'A'.repeat(7 * 1024 * 1024) }] });
+    await expect(importProject(wire)).rejects.toThrow(/size|large|asset/i);
+    expect(decoder).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 
   it('rejects unsupported project versions and oversized assets', async () => {

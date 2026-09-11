@@ -6,6 +6,7 @@ export const MAX_ASSET_BYTES = 5 * 1024 * 1024;
 export const MAX_TOTAL_ASSET_BYTES = 20 * 1024 * 1024;
 export const MAX_IMAGE_SIDE = 4096;
 export const MAX_IMAGE_PIXELS = 16 * 1024 * 1024;
+export const MAX_ASSET_BASE64_CHARS = Math.ceil(MAX_ASSET_BYTES / 3) * 4;
 
 export interface ProjectFile {
   version: typeof PROJECT_VERSION;
@@ -27,6 +28,7 @@ function bytesToBase64(bytes: ArrayBuffer): string {
 }
 
 function base64ToBytes(value: string): ArrayBuffer {
+  if (typeof value !== 'string' || value.length > MAX_ASSET_BASE64_CHARS) throw new Error('Project asset data is too large.');
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4 === 1) throw new Error('Project contains invalid asset data.');
   const raw = atob(value);
   const bytes = new Uint8Array(raw.length);

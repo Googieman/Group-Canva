@@ -42,10 +42,11 @@ async function startEditor(rootElement: HTMLElement, localStorage: CanvasStorage
   const cursors = new Map<string, { element: HTMLElement; updated: number; point: Point }>();
   let fontReadyScheduled = false;
   async function hydrateAssets(assets: Array<{ id: string; mimeType: StoredAsset['mimeType']; bytes: ArrayBuffer }>): Promise<void> { await Promise.all(assets.map(async asset => { try { loadedAssets.set(asset.id, await decodeImageAsset(asset)); } catch { /* Keep a visible placeholder and allow a later retry. */ } })); if (board) render(); }
+  async function loadLocalFile(id: string): Promise<LocalFile | undefined> { return localStorage.getFile(id); }
 
   if (fileId || hostFileId) {
-    localFile = await localStorage.getFile(fileId ?? hostFileId!);
-    if (!localFile) { window.location.href = '/'; return; }
+    try { localFile = await loadLocalFile(fileId ?? hostFileId!); } catch (error) { ui.notify(error instanceof Error ? error.message : 'Saved files are unavailable in this browser.'); return; }
+    if (!localFile) { if (fileId || hostFileId) window.location.href = '/'; return; }
     localWriter = await localStorage.claimWriter(fileId ?? hostFileId!);
     state.hydrate({ epoch: `local-${localFile.id}`, revision: localFile.revision, roomId: localFile.id, selfId, strokes: documentToLegacyStrokes(localFile.document), redoIds: [], users: [{ id: selfId, name: 'You', color: '#5446d4' }], document: localFile.document, documentHistory: createHistory() });
     localDocumentMode = true;
@@ -133,7 +134,7 @@ async function startEditor(rootElement: HTMLElement, localStorage: CanvasStorage
     if (!localFile || localWriter?.readOnly || saveInProgress) return false;
     saveInProgress = true; const version = dirtyVersion; const title = localFile.title; ui.setFile(title, 'saving');
     try {
-      const next: LocalFile = { ...localFile, updatedAt: Date.now(), document: { ...state.document!, title }, revision: state.revision, camera: board.getCamera(), roomEpoch: isHostSession ? state.epoch : localFile.roomEpoch };
+      const next = snapshotForSave();
       await localStorage.saveFile(next); localFile = next; if (isHostSession && hostCapability) connection?.hostSaved(hostCapability, state.epoch, state.revision); ui.setFile(title, 'saved');
       if (dirtyVersion === version) { dirtySince = 0; clearTimeout(maxSaveTimer); maxSaveTimer = undefined; }
       else { clearTimeout(saveTimer); saveTimer = setTimeout(() => { void saveNow(); }, 1000); }
@@ -141,6 +142,7 @@ async function startEditor(rootElement: HTMLElement, localStorage: CanvasStorage
     } catch (error) { ui.setFile(title, 'error', error instanceof Error ? error.message : 'Unable to save'); return false; }
     finally { saveInProgress = false; }
   }
+  function snapshotForSave(): LocalFile { if (!localFile || !state.document) throw new Error('There is no committed canvas to save.'); return { ...localFile, updatedAt: Date.now(), document: { ...state.document, title: localFile.title }, revision: state.revision, camera: board.getCamera(), roomEpoch: isHostSession ? state.epoch : localFile.roomEpoch }; }
   function scheduleSave(): void { if (localFile) markDirty(); }
   function closeTextEditor(): void { textEditor?.remove(); textEditor = null; }
   function commitTextEditor(): void { if (textEditor && draftObject?.type === 'text') commitDraft(); }

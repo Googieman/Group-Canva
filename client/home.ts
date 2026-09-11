@@ -27,14 +27,14 @@ export async function renderHome(root: HTMLElement, storage: CanvasStorage): Pro
       const date = document.createElement('span'); date.textContent = `Edited ${formatDate(file.updatedAt)}`; info.append(title, date); info.addEventListener('click', () => go(file.id));
       const actions = document.createElement('div'); actions.className = 'file-card-actions';
       const action = (label: string, handler: () => void) => { const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.addEventListener('click', handler); actions.append(button); };
-      action('Rename', async () => { const next = window.prompt('Canvas name', file.title)?.trim(); if (!next || next === file.title) return; await storage.saveFile({ ...file, title: next, updatedAt: Date.now(), document: { ...file.document, title: next } }); await refresh(); });
-      action('Duplicate', async () => { await storage.duplicateFile(file.id); await refresh(); });
+      action('Rename', async () => { const next = window.prompt('Canvas name', file.title)?.trim(); if (!next || next === file.title) return; try { await storage.saveFile({ ...file, title: next, updatedAt: Date.now(), document: { ...file.document, title: next } }); await refresh(); } catch (error) { notify(error instanceof Error ? error.message : 'Unable to rename this canvas.'); } });
+      action('Duplicate', async () => { try { await storage.duplicateFile(file.id); await refresh(); } catch (error) { notify(error instanceof Error ? error.message : 'Unable to duplicate this canvas.'); } });
       action('Host', () => { window.location.href = `/?host=${encodeURIComponent(file.id)}`; });
-      action('Delete', async () => { if (!window.confirm(`Delete “${file.title}”?`)) return; await storage.deleteFile(file.id); await refresh(); });
+      action('Delete', async () => { if (!window.confirm(`Delete “${file.title}”?`)) return; try { await storage.deleteFile(file.id); await refresh(); } catch (error) { notify(error instanceof Error ? error.message : 'Unable to delete this canvas.'); } });
       row.append(info, actions); list.append(row);
     }
   };
-  root.querySelector<HTMLButtonElement>('.new-canvas-button')!.addEventListener('click', async () => { const file = freshFile(); await storage.saveFile(file); go(file.id); });
+  root.querySelector<HTMLButtonElement>('.new-canvas-button')!.addEventListener('click', async () => { const file = freshFile(); try { await storage.saveFile(file); go(file.id); } catch (error) { notify(error instanceof Error ? error.message : 'Unable to create a canvas on this device.'); } });
   const picker = root.querySelector<HTMLInputElement>('.project-picker')!;
   root.querySelector<HTMLButtonElement>('.import-button')!.addEventListener('click', () => picker.click());
   picker.addEventListener('change', async () => { const file = picker.files?.[0]; picker.value = ''; if (!file) return; try { const project = await importProject(file); const next = freshFile(project.document.title); await storage.saveFile({ ...next, document: { ...project.document, id: next.document.id, title: next.title }, assets: project.assets }); go(next.id); } catch (error) { notify(error instanceof Error ? error.message : 'Unable to import that project.'); } });
