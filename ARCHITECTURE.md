@@ -75,7 +75,7 @@ Every room lifetime has a new random epoch. Restarting the process or recreating
 
 ## Validation and bounded resources
 
-The backend checks exact command shapes, safe IDs, finite coordinates within the board, hex colors, brush/eraser tools, widths 1–64, one unfinished operation per user, batch lengths 1–64, offsets, ownership, and message size. It limits room count, participants, accepted operation IDs, history size, points, total points, and command rates. Empty rooms expire after 30 minutes. Limits are configurable in the testable server factory; capacity failures do not partially mutate history.
+The backend checks exact command shapes, safe IDs, finite coordinates within the ±100,000 world, hex colors, brush/eraser tools, widths 1–64, one unfinished operation per user, batch lengths 1–64, offsets, ownership, and message size. It limits room count, participants, accepted operation IDs, history size, points, total points, image bytes, and command rates. Empty rooms expire after 30 minutes. Limits are configurable in the testable server factory; capacity failures do not partially mutate history.
 
 Browser origins use an exact allowlist. Origin checks are a browser cross-site protection, **not authentication**: a native client can omit/spoof Origin. This public-room MVP has no private board guarantee. Production should terminate TLS at the host and use an explicit frontend origin. Slow/disconnected peers must recover through snapshots instead of retaining an unbounded transport queue.
 
@@ -90,4 +90,12 @@ Browser origins use an exact allowlist. Origin checks are a browser cross-site p
 
 `docs/VERIFICATION.md` records measured local propagation and browser results. Local socket measurements are not international latency measurements; WebKit automation on Windows is not native Safari certification.
 
-One Render instance in Singapore prioritizes the planned India/Asia audience. Cloudflare's CDN improves initial page delivery but does not remove cross-country drawing latency. A future scaled service would assign each room a single owner, persist an operation log plus snapshots, and route clients to that owner. Simply increasing independent backend instances would split authority and corrupt collaboration. Persistence, Redis, multi-region routing, and paid infrastructure remain outside this MVP.
+One Render instance in Singapore prioritizes the planned India/Asia audience. Cloudflare's CDN improves initial page delivery but does not remove cross-country drawing latency. A future scaled service would assign each room a single owner, persist an operation log plus snapshots, and route clients to that owner. Simply increasing independent backend instances would split authority and corrupt collaboration. Persistent server storage, Redis, multi-region routing, and paid infrastructure remain outside this MVP.
+
+## Document v2 additions
+
+The shared document union covers ink, shapes, text, and image references. DOM-free command application produces before/after transactions for local and server authority alike; mixed legacy rooms promote to transaction history when their first object edit is accepted. Images stay out of drawing events and snapshots and use token-authenticated, bounded PNG/JPEG/WebP endpoints.
+
+Saved canvases use IndexedDB with separate file and asset stores, best-effort single-writer exclusion, one-second idle autosave, and a five-second continuous-edit ceiling. Project downloads embed versioned JSON and base64 image bytes. Managed host sessions carry a private capability, host-save watermark, two-minute host recovery pause, and explicit end state; invite URLs never carry the capability.
+
+The camera maps a bounded ±100,000 world through a 10–400% viewport transform. Space/middle-button/Hand navigation, wheel zoom, two-finger touch navigation, object hit-testing, marquee selection, leases, and ink-only erasing are interaction layers and do not consume camera revisions. The latency label uses independent ten-second Socket.IO acknowledgement probes and reports the median of the latest five samples.

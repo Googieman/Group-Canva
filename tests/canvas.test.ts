@@ -177,4 +177,25 @@ describe('CanvasBoard input and rendering', () => {
     expect(callbacks.onCursor).toHaveBeenLastCalledWith(null);
     board.destroy();
   });
+  it('maps pointer input through a zoomed camera', () => {
+    const { board, canvas, callbacks } = setup();
+    board.setEnabled(true); board.setCamera({ x: 800, y: 450, zoom: 2 });
+    canvas.fire('pointerdown', { clientX: 400, clientY: 225 });
+    expect(callbacks.onBegin).toHaveBeenCalledWith({ x: 800, y: 450 });
+    board.destroy();
+  });
+  it('cancels an active touch drawing gesture before two-finger navigation', () => {
+    const { board, canvas, callbacks } = setup();
+    board.setEnabled(true);
+    canvas.fire('pointerdown', { pointerType: 'touch', pointerId: 1, clientX: 10, clientY: 10 });
+    canvas.fire('pointerdown', { pointerType: 'touch', pointerId: 2, clientX: 30, clientY: 10 });
+    expect(callbacks.onBegin).toHaveBeenCalledTimes(1);
+    expect(callbacks.onCancel).toHaveBeenCalledTimes(1);
+    const before = board.getCamera();
+    canvas.fire('pointermove', { pointerType: 'touch', pointerId: 1, clientX: 20, clientY: 10 });
+    expect(board.getCamera()).not.toEqual(before);
+    canvas.fire('pointerup', { pointerType: 'touch', pointerId: 1, clientX: 20, clientY: 10 });
+    canvas.fire('pointerup', { pointerType: 'touch', pointerId: 2, clientX: 30, clientY: 10 });
+    board.destroy();
+  });
 });

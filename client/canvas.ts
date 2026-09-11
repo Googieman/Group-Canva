@@ -1,4 +1,6 @@
 import { BOARD_HEIGHT, BOARD_WIDTH, type Point, type Stroke, type Tool } from '../shared/protocol';
+import type { CanvasObject } from '../shared/document';
+import { panCamera, screenToWorld, zoomAround, type Camera } from './viewport';
 import { diagnostics } from './diagnostics';
 
 export interface CanvasCallbacks {
@@ -7,6 +9,9 @@ export interface CanvasCallbacks {
   onEnd(): void;
   onCancel(): void;
   onCursor(point: Point | null): void;
+  onCameraChange?(camera: Camera): void;
+  onWidthChange?(width: number): void;
+  onBeginWithModifiers?(point: Point, shift: boolean): void;
 }
 
 /** Input uses CSS bounds, never the device-pixel backing dimensions. */
@@ -131,6 +136,64 @@ function mergeBounds(bounds: InkBounds[]): InkBounds[] {
   return merged;
 }
 
+function objectBounds(object: CanvasObject): InkBounds | null {
+  const x = object.translation.x, y = object.translation.y;
+  if (object.type === 'ink') return strokeBounds({ ...object, points: object.points.map(point => ({ x: point.x + x, y: point.y + y })) });
+  const height = object.type === 'text' ? Math.max(1, object.text.split('\n').length) * object.fontSize * object.lineHeight : object.height;
+  return { left: x, top: y, right: x + object.width, bottom: y + height };
+}
+
+function setWorldTransform(ctx: CanvasRenderingContext2D, dpr: number, camera: Camera): void {
+  ctx.setTransform(dpr * camera.zoom, 0, 0, dpr * camera.zoom,
+    dpr * (BOARD_WIDTH / 2 - camera.x * camera.zoom), dpr * (BOARD_HEIGHT / 2 - camera.y * camera.zoom));
+}
+
+function drawObject(ctx: CanvasRenderingContext2D, object: CanvasObject, assets: Map<string, CanvasImageSource>): void {
+  const x = object.translation.x, y = object.translation.y;
+  ctx.globalCompositeOperation = 'source-over';
+  if (object.type === 'shape') {
+    ctx.lineWidth = object.strokeWidth; ctx.strokeStyle = object.strokeColor; ctx.fillStyle = object.fill ?? 'transparent';
+    if (object.shape === 'line' || object.shape === 'arrow') {
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + object.width, y + object.height); ctx.stroke();
+      if (object.shape === 'arrow') {
+        const angle = Math.atan2(object.height, object.width), size = Math.max(8, object.strokeWidth * 3);
+        ctx.beginPath(); ctx.moveTo(x + object.width, y + object.height);
+        ctx.lineTo(x + object.width - Math.cos(angle - Math.PI / 6) * size, y + object.height - Math.sin(angle - Math.PI / 6) * size);
+        ctx.moveTo(x + object.width, y + object.height);
+        ctx.lineTo(x + object.width - Math.cos(angle + Math.PI / 6) * size, y + object.height - Math.sin(angle + Math.PI / 6) * size); ctx.stroke();
+      }
+    } else {
+      ctx.beginPath();
+      if (object.shape === 'ellipse') ctx.ellipse(x + object.width / 2, y + object.height / 2, Math.abs(object.width / 2), Math.abs(object.height / 2), 0, 0, Math.PI * 2);
+      else ctx.rect(x, y, object.width, object.height);
+      if (object.fill) ctx.fill();
+      ctx.stroke();
+    }
+    return;
+  }
+  if (object.type === 'text') {
+    ctx.fillStyle = object.color; ctx.font = `${object.fontSize}px Outfit, sans-serif`; ctx.textBaseline = 'top';
+    object.text.split('\n').forEach((line, index) => ctx.fillText(line, x, y + index * object.fontSize * object.lineHeight));
+    return;
+  }
+  if (object.type === 'image') {
+    const asset = assets.get(object.assetId);
+    if (asset) { try { ctx.drawImage(asset, x, y, object.width, object.height); return; } catch { /* retry after image decode */ } }
+    ctx.strokeStyle = '#a8a1b0'; ctx.setLineDash([6, 4]); ctx.strokeRect(x, y, object.width, object.height); ctx.setLineDash([]);
+    ctx.fillStyle = '#77727d'; ctx.font = '14px Outfit, sans-serif'; ctx.fillText('Image unavailable', x + 10, y + 10);
+  }
+}
+
+function drawSelection(ctx: CanvasRenderingContext2D, objects: CanvasObject[], selectedIds: Set<string>, marquee: { start: Point; end: Point } | null, lineWidth: number): void {
+  ctx.save(); ctx.globalCompositeOperation = 'source-over'; ctx.strokeStyle = '#5446d4'; ctx.lineWidth = lineWidth; if (typeof ctx.setLineDash === 'function') ctx.setLineDash([6, 4]);
+  for (const object of objects) {
+    if (!selectedIds.has(object.id)) continue;
+    const bounds = objectBounds(object); if (bounds) ctx.strokeRect(bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top);
+  }
+  if (marquee) { const left = Math.min(marquee.start.x, marquee.end.x), top = Math.min(marquee.start.y, marquee.end.y); ctx.strokeRect(left, top, Math.abs(marquee.end.x - marquee.start.x), Math.abs(marquee.end.y - marquee.start.y)); }
+  if (typeof ctx.setLineDash === 'function') ctx.setLineDash([]); ctx.restore();
+}
+
 export class CanvasBoard {
   private readonly context: CanvasRenderingContext2D;
   private readonly cache: HTMLCanvasElement;
@@ -138,6 +201,11 @@ export class CanvasBoard {
   private readonly tailCache: HTMLCanvasElement;
   private readonly tailCacheContext: CanvasRenderingContext2D;
   private strokes: Stroke[] = [];
+  private objects: CanvasObject[] = [];
+  private assets = new Map<string, CanvasImageSource>();
+  private selectedIds = new Set<string>();
+  private marquee: { start: Point; end: Point } | null = null;
+  private camera: Camera = { x: BOARD_WIDTH / 2, y: BOARD_HEIGHT / 2, zoom: 1 };
   private cachedPrefix: Stroke[] = [];
   private paths = new Map<string, { stroke: Stroke; path: Path2D }>();
   private cachedTail: Stroke[] = [];
@@ -147,6 +215,12 @@ export class CanvasBoard {
   private enabled = false;
   private destroyed = false;
   private pointerId: number | null = null;
+  private panPointerId: number | null = null;
+  private panLast: Point | null = null;
+  private touchPoints = new Map<number, Point>();
+  private touchGesture: { center: Point; distance: number } | null = null;
+  private navigationMode = false;
+  private spaceDown = false;
   private lastPoint: Point | null = null;
   private dpr = 0;
   private tool: Tool = 'brush';
@@ -172,10 +246,13 @@ export class CanvasBoard {
       ['pointercancel', event => this.onCancel(event as PointerEvent)],
       ['lostpointercapture', event => this.onCancel(event as PointerEvent)],
       ['pointerleave', () => this.callbacks.onCursor(null)],
+      ['wheel', event => this.onWheel(event as WheelEvent)],
       ['contextmenu', event => event.preventDefault()],
     ];
     for (const [name, listener] of this.listeners) canvas.addEventListener(name, listener);
     window.addEventListener('resize', this.onResize);
+    window.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('keyup', this.onKeyUp);
     this.resizeBacking();
     this.updateCursor();
     this.invalidate();
@@ -187,11 +264,43 @@ export class CanvasBoard {
     this.invalidate();
   }
 
+  setObjects(objects: CanvasObject[]): void {
+    if (this.destroyed) return;
+    this.objects = objects.slice().sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+    this.fullRepaint = true;
+    this.invalidate();
+  }
+
+  setAssets(assets: Map<string, CanvasImageSource>): void {
+    this.assets = new Map(assets);
+    this.fullRepaint = true;
+    this.invalidate();
+  }
+
+  setSelection(ids: Iterable<string>, marquee: { start: Point; end: Point } | null = null): void {
+    if (this.destroyed) return;
+    this.selectedIds = new Set(ids); this.marquee = marquee ? { start: { ...marquee.start }, end: { ...marquee.end } } : null; this.invalidate();
+  }
+
+  setCamera(camera: Camera): void {
+    if (this.destroyed) return;
+    this.camera = { x: Math.max(-100_000, Math.min(100_000, camera.x)), y: Math.max(-100_000, Math.min(100_000, camera.y)), zoom: Math.max(0.1, Math.min(4, camera.zoom)) };
+    this.fullRepaint = true;
+    this.updateCursor();
+    this.callbacks.onCameraChange?.(this.camera);
+    this.invalidate();
+  }
+
+  getCamera(): Camera { return { ...this.camera }; }
+
+  setNavigationMode(enabled: boolean): void { this.navigationMode = enabled; this.updateCursor(); }
+
   setEnabled(enabled: boolean): void {
     if (this.destroyed || this.enabled === enabled) return;
     this.enabled = enabled;
     if (!enabled) {
       this.cancelPointer();
+      this.releasePan();
       this.callbacks.onCursor(null);
     }
     this.updateCursor();
@@ -208,11 +317,14 @@ export class CanvasBoard {
     if (this.destroyed) return;
     this.destroyed = true;
     this.cancelPointer();
+    this.releasePan();
     this.callbacks.onCursor(null);
     if (this.frame !== null) cancelAnimationFrame(this.frame);
     this.frame = null;
     for (const [name, listener] of this.listeners) this.canvas.removeEventListener(name, listener);
     window.removeEventListener('resize', this.onResize);
+    window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('keyup', this.onKeyUp);
     this.cache.width = 0;
     this.cache.height = 0;
     this.tailCache.width = 0;
@@ -222,35 +334,97 @@ export class CanvasBoard {
     this.paths.clear();
     this.renderedInk.clear();
     this.cachedTail = [];
+    this.touchPoints.clear();
+    this.touchGesture = null;
   }
 
   private point(event: Pick<PointerEvent, 'clientX' | 'clientY'>): Point | null {
-    return toLogicalPoint(event.clientX, event.clientY, this.canvas.getBoundingClientRect());
+    const screen = toLogicalPoint(event.clientX, event.clientY, this.canvas.getBoundingClientRect());
+    return screen ? screenToWorld(screen, { width: BOARD_WIDTH, height: BOARD_HEIGHT }, this.camera) : null;
   }
 
   private onDown(event: PointerEvent): void {
-    if (!this.enabled || this.pointerId !== null || event.button !== 0) return;
+    if (event.pointerType === 'touch') { this.onTouchDown(event); return; }
+    this.beginPointer(event);
+  }
+
+  private beginPointer(event: PointerEvent): void {
+    if (!this.enabled || this.pointerId !== null || this.panPointerId !== null || (event.button !== 0 && event.button !== 1)) return;
     const point = this.point(event);
     if (!point) return;
     diagnostics?.input(event.timeStamp);
     event.preventDefault();
+    if (event.button === 1 || this.spaceDown || this.navigationMode) {
+      try { this.canvas.setPointerCapture(event.pointerId); } catch { return; }
+      this.panPointerId = event.pointerId; this.panLast = { x: event.clientX, y: event.clientY }; return;
+    }
     // Capture before publishing a begin: failed capture must not leave an orphan stroke.
     try { this.canvas.setPointerCapture(event.pointerId); } catch { return; }
     this.pointerId = event.pointerId;
     this.lastPoint = point;
     this.callbacks.onBegin(point);
+    this.callbacks.onBeginWithModifiers?.(point, event.shiftKey);
     if (this.enabled) this.callbacks.onCursor(point);
   }
 
+  private onTouchDown(event: PointerEvent): void {
+    if (!this.enabled || (event.button !== 0 && event.button !== 1)) return;
+    this.touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    try { this.canvas.setPointerCapture(event.pointerId); } catch { this.touchPoints.delete(event.pointerId); return; }
+    if (this.touchPoints.size >= 2) {
+      if (this.pointerId !== null) this.cancelPointer();
+      this.releasePan();
+      this.touchGesture = this.touchMetrics();
+      this.callbacks.onCursor(null);
+      return;
+    }
+    this.beginPointer(event);
+  }
+
   private onMove(event: PointerEvent): void {
-    if (!this.enabled || (this.pointerId !== null && event.pointerId !== this.pointerId)) return;
+    if (event.pointerType === 'touch') { this.onTouchMove(event); return; }
+    if (!this.enabled || (this.pointerId !== null && event.pointerId !== this.pointerId) || (this.panPointerId !== null && event.pointerId !== this.panPointerId)) return;
+    if (this.panPointerId === event.pointerId) {
+      if (this.panLast) this.setCamera(panCamera(this.camera, { x: event.clientX - this.panLast.x, y: event.clientY - this.panLast.y }));
+      this.panLast = { x: event.clientX, y: event.clientY }; return;
+    }
     this.callbacks.onCursor(this.point(event));
     if (this.pointerId === null) return;
     event.preventDefault();
     this.publishSamples(event, false);
   }
 
+  private onTouchMove(event: PointerEvent): void {
+    if (!this.enabled || !this.touchPoints.has(event.pointerId)) return;
+    this.touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (this.touchPoints.size >= 2) {
+      const next = this.touchMetrics();
+      if (this.touchGesture) {
+        const delta = { x: next.center.x - this.touchGesture.center.x, y: next.center.y - this.touchGesture.center.y };
+        let camera = panCamera(this.camera, delta);
+        const screen = toLogicalPoint(next.center.x, next.center.y, this.canvas.getBoundingClientRect());
+        if (screen && this.touchGesture.distance > 0) camera = zoomAround(camera, next.distance / this.touchGesture.distance, screen, { width: BOARD_WIDTH, height: BOARD_HEIGHT });
+        this.setCamera(camera);
+      }
+      this.touchGesture = next;
+      return;
+    }
+    this.onMove({ ...event, pointerType: 'mouse' } as PointerEvent);
+  }
+
+  private touchMetrics(): { center: Point; distance: number } {
+    const points = [...this.touchPoints.values()];
+    const first = points[0]!, second = points[1] ?? first;
+    return { center: { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 }, distance: Math.hypot(first.x - second.x, first.y - second.y) };
+  }
+
   private onUp(event: PointerEvent): void {
+    if (event.pointerType === 'touch' && this.touchPoints.has(event.pointerId)) {
+      const before = this.touchPoints.size;
+      this.touchPoints.delete(event.pointerId);
+      if (before >= 2) { this.touchGesture = null; if (this.canvas.hasPointerCapture(event.pointerId)) { try { this.canvas.releasePointerCapture(event.pointerId); } catch { /* Already released by browser. */ } } return; }
+    }
+    if (event.pointerId === this.panPointerId) { this.releasePan(); return; }
     if (!this.enabled || event.pointerId !== this.pointerId) return;
     event.preventDefault();
     this.publishSamples(event, true);
@@ -263,6 +437,8 @@ export class CanvasBoard {
   }
 
   private onCancel(event: PointerEvent): void {
+    if (event.pointerType === 'touch') { this.touchPoints.delete(event.pointerId); this.touchGesture = this.touchPoints.size >= 2 ? this.touchMetrics() : null; }
+    if (event.pointerId === this.panPointerId) { this.releasePan(); return; }
     if (event.pointerId !== this.pointerId) return;
     this.cancelPointer();
     this.callbacks.onCursor(null);
@@ -290,6 +466,14 @@ export class CanvasBoard {
     }
   }
 
+  private releasePan(): void {
+    const pointerId = this.panPointerId;
+    this.panPointerId = null; this.panLast = null;
+    if (pointerId !== null && this.canvas.hasPointerCapture(pointerId)) {
+      try { this.canvas.releasePointerCapture(pointerId); } catch { /* Already released by browser. */ }
+    }
+  }
+
   private cancelPointer(): void {
     if (this.pointerId === null) return;
     this.releasePointer();
@@ -300,6 +484,21 @@ export class CanvasBoard {
     this.resizeBacking();
     this.updateCursor();
     this.invalidate();
+  };
+
+  private readonly onKeyDown = (event: KeyboardEvent): void => { if (event.code === 'Space') this.spaceDown = true; };
+  private readonly onKeyUp = (event: KeyboardEvent): void => { if (event.code === 'Space') this.spaceDown = false; };
+  private readonly onWheel = (event: WheelEvent): void => {
+    if (!this.enabled) return;
+    event.preventDefault();
+    if (this.tool === 'eraser' && !event.ctrlKey && !event.metaKey) {
+      const next = Math.max(1, Math.min(64, this.width + (event.deltaY < 0 ? 1 : -1)));
+      if (next !== this.width) { this.width = next; this.callbacks.onWidthChange?.(next); this.updateCursor(); }
+      return;
+    }
+    const screen = toLogicalPoint(event.clientX, event.clientY, this.canvas.getBoundingClientRect());
+    if (!screen) return;
+    this.setCamera(zoomAround(this.camera, Math.exp(-event.deltaY * 0.001), screen, { width: BOARD_WIDTH, height: BOARD_HEIGHT }));
   };
 
   private resizeBacking(): void {
@@ -320,7 +519,7 @@ export class CanvasBoard {
   private updateCursor(): void {
     if (!this.enabled) { this.canvas.style.cursor = 'not-allowed'; return; }
     const cssScale = this.canvas.getBoundingClientRect().width / BOARD_WIDTH;
-    const diameter = Math.min(96, Math.max(6, this.width * cssScale));
+    const diameter = Math.min(96, Math.max(6, this.width * cssScale * this.camera.zoom));
     const size = Math.ceil(diameter + 4);
     const center = size / 2;
     const dot = this.tool === 'brush' ? `<circle cx="${center}" cy="${center}" r="1.5" fill="${this.color}"/>` : '';
@@ -336,6 +535,10 @@ export class CanvasBoard {
   private render(): void {
     const started = diagnostics ? performance.now() : 0;
     this.resizeBacking();
+    if (this.camera.zoom !== 1 || this.camera.x !== BOARD_WIDTH / 2 || this.camera.y !== BOARD_HEIGHT / 2) {
+      this.renderCameraFrame();
+      return;
+    }
     const visibleIds = new Set(this.strokes.map(stroke => stroke.id));
     for (const id of this.paths.keys()) if (!visibleIds.has(id)) this.paths.delete(id);
     const compareStarted = diagnostics ? performance.now() : 0;
@@ -440,9 +643,18 @@ export class CanvasBoard {
         const bounds = strokeBounds(stroke);
         if (bounds && intersects(bounds, region)) drawStroke(this.context, stroke, this.pathFor(stroke));
       }
+      this.context.globalCompositeOperation = 'source-over';
+      this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      for (const object of this.objects) {
+        const bounds = objectBounds(object);
+        if (!bounds || !intersects(bounds, region)) continue;
+        drawObject(this.context, object, this.assets);
+      }
       if (diagnostics) replayMs += performance.now() - regionReplayStarted;
       this.context.restore();
     }
+    this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    drawSelection(this.context, this.objects, this.selectedIds, this.marquee, 1.5);
     this.fullRepaint = false;
     diagnostics?.record('surfaceCopyMs', copyMs);
     diagnostics?.record('repaintAreaPx', repaintArea);
@@ -454,6 +666,20 @@ export class CanvasBoard {
     }
     diagnostics?.record('renderMs', performance.now()-started);
     diagnostics?.painted();
+  }
+
+  private renderCameraFrame(): void {
+    const view: InkBounds = { left: this.camera.x - BOARD_WIDTH / (2 * this.camera.zoom), top: this.camera.y - BOARD_HEIGHT / (2 * this.camera.zoom), right: this.camera.x + BOARD_WIDTH / (2 * this.camera.zoom), bottom: this.camera.y + BOARD_HEIGHT / (2 * this.camera.zoom) };
+    this.context.setTransform(1, 0, 0, 1, 0, 0);
+    this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.context.globalCompositeOperation = 'source-over';
+    setWorldTransform(this.context, this.dpr, this.camera);
+    for (const stroke of this.strokes) { const bounds = strokeBounds(stroke); if (!bounds || intersects(bounds, view)) drawStroke(this.context, stroke, this.pathFor(stroke)); }
+    this.context.globalCompositeOperation = 'source-over';
+    for (const object of this.objects) { const bounds = objectBounds(object); if (!bounds || intersects(bounds, view)) drawObject(this.context, object, this.assets); }
+    drawSelection(this.context, this.objects, this.selectedIds, this.marquee, Math.max(1, 1.5 / this.camera.zoom));
+    this.context.setTransform(1, 0, 0, 1, 0, 0);
+    this.fullRepaint = false;
   }
 
   private pathFor(stroke: Stroke): Path2D | undefined {

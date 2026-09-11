@@ -108,7 +108,7 @@ describe('authoritative websocket collaboration', () => {
     const server = await start();
     const a = (await connect(server.url)).socket;
     const b = (await connect(server.url)).socket;
-    for (const payload of [null, {}, { ...begin('bad'), tool: 'paint' }, { ...begin('bad'), color: 'red' }, { ...begin('bad'), width: 65 }, { ...begin('bad'), point: { x: -1, y: 20 } }, { ...begin('bad'), id: '<script>' }]) {
+    for (const payload of [null, {}, { ...begin('bad'), tool: 'paint' }, { ...begin('bad'), color: 'red' }, { ...begin('bad'), width: 65 }, { ...begin('bad'), point: { x: -100001, y: 20 } }, { ...begin('bad'), id: '<script>' }]) {
       expect(await command(a, payload)).toMatchObject({ ok: false });
     }
     await command(a, begin('owned'));
@@ -246,5 +246,98 @@ describe('authoritative websocket collaboration', () => {
     const state = await resync(b);
     expect(state.revision).toBe(0);
     expect(state.strokes).toEqual([]);
+  });
+
+  it('accepts versioned object transactions with bounded operation deduplication', async () => {
+    const server = await start();
+    const a = (await connect(server.url)).socket;
+    const object = { id:'shape-1',type:'shape' as const,order:1,version:1,translation:{x:20,y:30},shape:'rectangle' as const,width:100,height:60,strokeColor:'#000000',strokeWidth:4,fill:null };
+    expect(await command(a, { type:'object:create', object, operationId:'create-1' })).toEqual({ ok:true });
+    const duplicate = await command(a, { type:'object:create', object, operationId:'create-1' });
+    expect(duplicate).toEqual({ ok:true });
+    const moved = await command(a, { type:'object:move',ids:['shape-1'],delta:{x:10,y:5},expectedVersions:{'shape-1':1},operationId:'move-1' });
+    expect(moved).toEqual({ ok:true });
+    const current = await resync(a);
+    expect(current.document?.objects[0]).toMatchObject({ translation:{x:30,y:35}, version:2 });
+    expect(current.revision).toBe(2);
+    await new Promise<void>((resolve) => a.emit('latency:ping', () => resolve()));
+  });
+
+  it('acquires object edit leases atomically and releases them on disconnect', async () => {
+    const server = await start();
+    const a = (await connect(server.url)).socket;
+    const b = (await connect(server.url)).socket;
+    const object = { id:'leased-shape',type:'shape' as const,order:1,version:1,translation:{x:20,y:30},shape:'rectangle' as const,width:100,height:60,strokeColor:'#000000',strokeWidth:4,fill:null };
+    await command(a, { type:'object:create', object });
+    expect(await command(a, { type:'object:lease', ids:['leased-shape'], leaseId:'lease-a', action:'acquire' } as Command)).toEqual({ ok:true });
+    expect(await command(b, { type:'object:lease', ids:['leased-shape'], leaseId:'lease-b', action:'acquire' } as Command)).toMatchObject({ ok:false });
+    a.disconnect();
+    await expect.poll(() => server.io.sockets.sockets.size).toBe(1);
+    expect(await command(b, { type:'object:lease', ids:['leased-shape'], leaseId:'lease-b', action:'acquire' } as Command)).toEqual({ ok:true });
+  });
+
+  it('keeps legacy strokes and object transactions in one mixed undo order', async () => {
+    const server = await start();
+    const a = (await connect(server.url)).socket;
+    await complete(a, 'old-stroke');
+    const object = { id: 'mixed-shape', type: 'shape' as const, order: 1, version: 1, translation: { x: 20, y: 30 }, shape: 'rectangle' as const, width: 100, height: 60, strokeColor: '#000000', strokeWidth: 4, fill: null };
+    await command(a, { type: 'object:create', object });
+    await complete(a, 'new-stroke');
+    await command(a, { type: 'history:undo' });
+    const state = await resync(a);
+    expect(state.document?.objects.find(item => item.id === 'new-stroke')).toBeUndefined();
+    expect(state.documentHistory?.redo).toHaveLength(1);
+    expect(state.documentHistory?.undo.at(-1)?.patches[0]?.after?.id).toBe('mixed-shape');
+  });
+  it('keeps moved ink in world space when a later stroke arrives', async () => {
+    const server = await start();
+    const a = (await connect(server.url)).socket;
+    await complete(a, 'moved-ink');
+    expect(await command(a, { type: 'object:move', ids: ['moved-ink'], delta: { x: 10, y: 5 }, expectedVersions: { 'moved-ink': 1 } })).toEqual({ ok: true });
+    await complete(a, 'later-stroke');
+    const state = await resync(a);
+    expect(state.document?.objects.find(object => object.id === 'moved-ink')).toMatchObject({ translation: { x: 10, y: 5 }, points: [{ x: 10, y: 10 }] });
+  });
+
+  it('stores image assets behind participant tokens and exposes only validated metadata', async () => {
+    const server = await start();
+    const peer = await connect(server.url);
+    expect(peer.snapshot.assetToken).toEqual(expect.any(String));
+    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1]);
+    const headers = { 'content-type': 'image/png', 'x-room-token': peer.snapshot.assetToken!, 'x-asset-id': 'pixel' };
+    const upload = await fetch(`${server.url}/api/rooms/playground/assets`, { method: 'POST', headers, body: png });
+    expect(upload.status).toBe(201);
+    expect(await upload.json()).toMatchObject({ id: 'pixel', mimeType: 'image/png', width: 1, height: 1, byteLength: 24 });
+    const download = await fetch(`${server.url}/api/rooms/playground/assets/pixel`, { headers: { 'x-room-token': peer.snapshot.assetToken! } });
+    expect(download.status).toBe(200);
+    expect([...new Uint8Array(await download.arrayBuffer())]).toEqual([...png]);
+    const unauthorized = await fetch(`${server.url}/api/rooms/playground/assets/pixel`);
+    expect(unauthorized.status).toBe(401);
+  });
+
+  it('pauses managed rooms for host recovery and rejects stale host operations', async () => {
+    const server = await start({ limits: { hostGraceMs: 80 } });
+    const host = io(server.url, { transports: ['websocket'], reconnection: false });
+    const guest = io(server.url, { transports: ['websocket'], reconnection: false });
+    clients.push(host, guest);
+    await Promise.all([host, guest].map(socket => new Promise<void>((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); socket.connect(); })));
+    const hostSnapshotPromise = snapshotNext(host as Client);
+    await new Promise<Result>(resolve => host.emit('room:join', { roomId: 'managed', name: 'Host', host: true }, resolve));
+    const hostSnapshot = await hostSnapshotPromise;
+    const guestSnapshotPromise = snapshotNext(guest as Client);
+    await new Promise<Result>(resolve => guest.emit('room:join', { roomId: 'managed', name: 'Guest' }, resolve));
+    await guestSnapshotPromise;
+    const paused = new Promise<{ status: string }>(resolve => guest.once('room:status', resolve));
+    host.disconnect();
+    expect((await paused).status).toBe('paused');
+    expect(await command(guest as Client, begin('paused-stroke'))).toMatchObject({ ok: false });
+    const recovered = io(server.url, { transports: ['websocket'], reconnection: false }); clients.push(recovered as Client);
+    await new Promise<void>((resolve, reject) => { recovered.once('connect', resolve); recovered.once('connect_error', reject); });
+    const recoveredSnapshotPromise = snapshotNext(recovered as Client);
+    expect(await new Promise<Result>(resolve => recovered.emit('room:join', { roomId: 'managed', name: 'Host again', host: true, hostCapability: hostSnapshot.hostCapability }, resolve))).toEqual({ ok: true });
+    expect((await recoveredSnapshotPromise).roomStatus).toBe('active');
+    const ended = new Promise<{ status: string }>(resolve => guest.on('room:status', status => { if (status.status === 'ended') resolve(status); }));
+    expect(await new Promise<Result>(resolve => recovered.emit('room:end', { capability: hostSnapshot.hostCapability }, resolve))).toEqual({ ok: true });
+    expect((await ended).status).toBe('ended');
   });
 });

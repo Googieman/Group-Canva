@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DrawingState } from '../client/state';
+import { applyDocumentCommand, createDocument, createHistory, documentToLegacyStrokes, legacyStrokesToDocument, type CanvasObject } from '../shared/document';
 import type { DrawingEvent, Snapshot, Stroke } from '../shared/protocol';
 const stroke: Stroke = { id:'s1',userId:'u1',tool:'brush',color:'#000000',width:4,points:[{x:1,y:2}],order:1,completed:false,completionOrder:null,active:true };
 const snapshot = (revision=0,epoch='a'): Snapshot => ({ epoch,revision,roomId:'playground',selfId:'u1',strokes:[],redoIds:[],users:[] });
@@ -78,5 +79,26 @@ describe('authoritative client state', () => {
     const state = new DrawingState(); const snap={...snapshot(1),strokes:[stroke]}; state.hydrate(snap);
     const old=state.strokes[0]; state.receive({epoch:'a',revision:2,change:{type:'stroke:points',id:'s1',offset:1,points:[{x:3,y:4}]}});
     expect(stroke.points).toHaveLength(1); expect(old.points).toHaveLength(1); expect(state.strokes[0].points).toHaveLength(2);
+  });
+  it('reduces versioned document transactions through the same epoch and revision gate', () => {
+    const document = createDocument('doc-1');
+    const object: CanvasObject = { id:'shape-1',type:'shape',order:1,version:1,translation:{x:10,y:10},shape:'ellipse',width:80,height:40,strokeColor:'#000000',strokeWidth:3,fill:null };
+    const applied = applyDocumentCommand(document, createHistory(), { type:'object:create', object }, 'u1');
+    const state = new DrawingState();
+    state.hydrate({ ...snapshot(), document, documentHistory: createHistory() });
+    expect(state.receive({ epoch:'a', revision:1, change:{ type:'document:transaction', transaction:applied.transaction!, document:applied.document } })).toBe('applied');
+    expect(state.document?.objects).toEqual([object]);
+    expect(state.documentHistory?.undo).toHaveLength(1);
+  });
+  it('preserves translated ink when a later streamed stroke updates the legacy adapter', () => {
+    const movedDocument = legacyStrokesToDocument([{ ...stroke, completed: true, completionOrder: 1 }], 'doc-1');
+    const movedInk = movedDocument.objects[0]!;
+    if (movedInk.type !== 'ink') throw new Error('Expected an ink object.');
+    movedDocument.objects = [{ ...movedInk, translation: { x: 10, y: 5 }, points: [{ x: -9, y: -3 }] }];
+    const state = new DrawingState();
+    state.hydrate({ ...snapshot(), document: movedDocument, strokes: documentToLegacyStrokes(movedDocument) });
+    state.receive({ epoch: 'a', revision: 1, change: { type: 'stroke:begin', stroke: { ...stroke, id: 's2', completed: false, completionOrder: null, order: 2 } } });
+    const ink = state.document?.objects.find(object => object.id === 's1');
+    expect(ink).toMatchObject({ translation: { x: 10, y: 5 }, points: [{ x: -9, y: -3 }] });
   });
 });

@@ -10,7 +10,7 @@ Install Node.js **22.12 or newer** (developed with Node 24.19), then from this d
 npm install && npm start
 ```
 
-Open **http://localhost:3000** in two or more windows. Everyone on the same URL shares the canvas. `npm start` typechecks and builds both applications, then serves them from one Node process. Stop with Ctrl+C.
+Open **http://localhost:3000** in two or more windows. Create or open a canvas from **My canvases**, or use a shared room URL to draw together. `npm start` typechecks and builds both applications, then serves them from one Node process. Stop with Ctrl+C.
 
 ```sh
 npm run dev          # Vite http://localhost:5173 + backend :3000, with reload
@@ -27,6 +27,8 @@ npm run test:e2e     # Browser interactions and canvas pixel assertions
 - Others see your cursor and strokes while you draw. Guest names and distinct presence colors are assigned per connection.
 - Share the same URL. The default room is `playground`; `/?room=team-sketch` opens a separate in-memory room. Room IDs use letters, numbers, underscores, or hyphens.
 - A connection indicator shows joining/reconnecting states. Drawing pauses until the authoritative room snapshot arrives. Work already confirmed by the server survives a temporary client disconnect; unfinished work is canceled.
+
+From **My canvases**, choose **Host** to start a managed session from a saved local file. Copy the invite link for guests; it contains no host capability. Host disconnects pause managed editing for a two-minute recovery window, while ordinary shared room links retain the lightweight legacy behavior.
 
 ## Multi-user walkthrough
 
@@ -52,12 +54,14 @@ Cloudflare distributes the interface globally; the drawing stream still travels 
 
 ## Scope and limitations
 
-- In-memory only: no accounts, database, persistence, export, images, shapes, or private access control. A room URL is not a security boundary; anyone who knows it can draw and use global history.
+- Local files and image assets are stored in browser IndexedDB. Use **Download project** for portable backups; clearing browser storage removes local files.
+- Projects support brush/eraser, selection, rectangles, ellipses, lines, arrows, multiline text, and PNG/JPEG/WebP images. PNG export is a separate content-only action.
+- Host sessions use temporary in-memory room state and a private host capability. Guests can edit shared content but do not receive local project ownership controls. A join URL is not an account-based security boundary.
 - One authoritative process. Memory/capacity and message-rate limits reject excess work with a visible error; this is a bounded demo, not an unbounded archive.
 - Offline input is intentionally unavailable. A disconnect cancels unfinished strokes once the server detects it. A cold server may leave the UI in reconnecting state for a minute.
-- Layer order follows **stroke start**, but undo follows **stroke completion**. An earlier stroke's late-arriving points remain under a later eraser. This prevents arrival timing from producing different images on different clients.
+- Ink layer order follows **stroke start**, while transaction undo follows **completion**. Shapes, text, and images render above the transparent ink layer; erasers affect ink only. An earlier stroke's late-arriving points remain under a later eraser.
 - Local predictions can briefly change layering when the server's authoritative start order arrives.
-- The canvas fits a fixed 16:9 board; it does not provide infinite pan/zoom. Pointer input supports touch and pen, but no pressure sensitivity or simultaneous pointers on one device.
+- The canvas uses a bounded world with local pan/zoom from 10% to 400%. Pointer input supports touch pinch/pan and pen, but no pressure sensitivity.
 - Higgsfield had **0 available credits** at implementation time. No trial, purchase, or generation was started. The shipped design uses real HTML/CSS and an original SVG empty-state illustration. See `docs/design-concept.md`.
 - Browser-engine testing uses Chromium, Firefox, and WebKit. A WebKit run on Windows is not a claim that native macOS/iOS Safari has been tested. See `docs/VERIFICATION.md` for actual results and remaining manual checks.
 

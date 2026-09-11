@@ -113,3 +113,14 @@ The rejected-cache post sample also included an unfinished-brush control at 16.5
 `mixed-tail-post.json` reported `tailCacheBytes` and `tailCacheTiles` as zero for every post scenario, so that historical run exercised the direct fallback rather than retaining cached tiles.
 
 The experimental cache source was never committed and is not retained as production code. The raw post JSON, no-cache reference, task reports, and review artifacts preserve the measurements and decision; reproducing the rejected implementation would require a new experiment.
+
+## Roadmap implementation gate (12 September 2026)
+
+The roadmap extension added document objects and transactions, bounded camera navigation, selection/leases, local IndexedDB files, project import/download, PNG export, local images, explicit managed host sessions, room-scoped image transfer, and median latency probes.
+
+- `npm run typecheck`: **passed**.
+- `npm test -- --run`: **64 passed** across 11 files, including document, storage, camera, object, export, asset, mixed-history, lease, host-recovery, and touch-navigation coverage.
+- `npm run build`: **passed** after the final source changes.
+- Chromium whiteboard browser regression: **3 passed**.
+- A production-style browser smoke check created a local canvas, hosted it, copied an invite without the host capability, and confirmed the guest opened read-only ownership controls.
+- WebKit functional cases passed; two runs also exposed a Playwright-on-Windows trace-artifact teardown error while closing contexts. Firefox remains unavailable in this environment because its downloaded binary fails with Windows `spawn UNKNOWN`.

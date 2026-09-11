@@ -1,5 +1,7 @@
 import { io, type Socket } from 'socket.io-client';
-import type { ClientEvents, Command, Cursor, Point, ServerEvents, Snapshot, User } from '../shared/protocol';
+import type { CanvasDocument } from '../shared/document';
+import { PROTOCOL_VERSION } from '../shared/protocol';
+import type { ClientEvents, Command, Cursor, Point, ServerEvents, Snapshot, User, Result } from '../shared/protocol';
 import { DrawingState } from './state';
 import { diagnostics } from './diagnostics';
 
@@ -11,7 +13,11 @@ interface Callbacks {
   users(users: User[]): void;
   cursor(cursor: Cursor): void;
   error(message: string): void;
+  ping?(label: string): void;
+  roomStatus?(status: { status: 'active' | 'paused' | 'ended'; message?: string }): void;
+  hostSave?(watermark: { epoch: string; revision: number } | null): void;
 }
+interface ConnectionOptions { host?: boolean; hostCapability?: string }
 export class Connection {
   private socket: Socket<ServerEvents, ClientEvents>;
   private resyncPending = false;
@@ -19,7 +25,12 @@ export class Connection {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private generation = 0;
   private destroyed = false;
-  constructor(readonly state: DrawingState, roomId: string, name: string, private callbacks: Callbacks) {
+  private pingTimer: ReturnType<typeof setInterval> | undefined;
+  private pingOutstanding = false;
+  private pingSamples: number[] = [];
+  private roomPaused = false;
+  private assetToken: string | undefined;
+  constructor(readonly state: DrawingState, private readonly roomId: string, private readonly name: string, private callbacks: Callbacks, private readonly options: ConnectionOptions = {}) {
     const configuredServerUrl = import.meta.env.VITE_SERVER_URL?.trim();
     const hostedDemoUrl = typeof window !== 'undefined' && window.location.hostname === 'group-canva.pages.dev'
       ? 'https://group-canvas.onrender.com'
@@ -34,7 +45,7 @@ export class Connection {
       this.resyncPending = false;
       callbacks.status('syncing','Joining your shared canvas…');
       this.armHydrationTimeout();
-      this.socket.emit('room:join',{roomId,name},result => {
+      this.socket.emit('room:join',{roomId,name, protocolVersion: PROTOCOL_VERSION, ...(options.host ? { host: true } : {}), ...(options.hostCapability ? { hostCapability: options.hostCapability } : {})},result => {
         if (generation !== this.generation || !this.socket.connected) return;
         if (!result.ok) { callbacks.error(result.error); this.socket.disconnect(); callbacks.status('disconnected',result.error); }
       });
@@ -43,10 +54,14 @@ export class Connection {
       if (!this.socket.connected || snapshot.roomId !== roomId || snapshot.selfId !== this.socket.id) return;
       clearTimeout(this.hydrateTimer); this.resyncPending = false;
       const reset = !!state.epoch && state.epoch !== snapshot.epoch;
+      if (snapshot.protocolVersion !== undefined && snapshot.protocolVersion !== 2) { callbacks.error('This session uses an incompatible Group Canvas version. Update and try again.'); this.socket.disconnect(); return; }
+      this.roomPaused = snapshot.roomStatus === 'paused' || snapshot.roomStatus === 'ended';
+      this.assetToken = snapshot.assetToken;
+      if (snapshot.hostCapability && this.options.host) this.options.hostCapability = snapshot.hostCapability;
       if (!state.hydrate(snapshot)) { this.resync(); return; }
       this.generation++;
-      callbacks.snapshot(snapshot,reset); callbacks.users(snapshot.users);
-      callbacks.status('connected'); callbacks.drawing();
+      callbacks.snapshot(snapshot,reset); callbacks.users(snapshot.users); callbacks.roomStatus?.({ status: snapshot.roomStatus ?? 'active' });
+      callbacks.status('connected'); callbacks.drawing(); this.startPings();
     });
     this.socket.on('drawing:event', event => {
       // A packet from a transport that was closed during reconnect must not
@@ -67,9 +82,12 @@ export class Connection {
     this.socket.on('presence:update', users => callbacks.users(users));
     this.socket.on('cursor:update', cursor => callbacks.cursor(cursor));
     this.socket.on('server:error', message => callbacks.error(message));
+    this.socket.on('room:status', status => { this.roomPaused = status.status !== 'active'; callbacks.roomStatus?.(status); });
+    this.socket.on('room:host-save', watermark => callbacks.hostSave?.(watermark));
     this.socket.on('disconnect', reason => {
       this.generation++;
       clearTimeout(this.hydrateTimer); this.resyncPending = false; state.disconnect();
+      this.stopPings(); callbacks.ping?.('Ping unavailable');
       callbacks.status('disconnected','Connection lost. Reconnecting…');
       // Socket.io does not automatically reconnect after a server disconnect,
       // including our server's slow-peer eviction. Normal transport loss uses
@@ -83,10 +101,11 @@ export class Connection {
     });
     this.socket.on('connect_error', () => callbacks.status('disconnected','Unable to connect. Retrying… A sleeping server may take a minute.'));
     this.socket.io.on('reconnect_attempt', () => callbacks.status('connecting','Reconnecting to your canvas…'));
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.onVisibilityChange);
     callbacks.status('connecting'); this.socket.connect();
   }
   send(command: Command) {
-    if (!this.socket.connected || !this.state.ready || this.resyncPending) return false;
+    if (!this.socket.connected || !this.state.ready || this.resyncPending || this.roomPaused) return false;
     const started = diagnostics ? performance.now() : 0;
     const generation = this.generation;
     if (command.type === 'stroke:points') diagnostics?.batch(command.points.length);
@@ -119,6 +138,66 @@ export class Connection {
   }
   destroy() {
     this.destroyed = true; this.generation++;
-    clearTimeout(this.hydrateTimer); clearTimeout(this.reconnectTimer); this.socket.disconnect();
+    clearTimeout(this.hydrateTimer); clearTimeout(this.reconnectTimer); this.stopPings(); if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisibilityChange); this.socket.disconnect();
   }
+
+  async uploadAsset(asset: { id: string; mimeType: string; bytes: ArrayBuffer }): Promise<Result> {
+    if (!this.assetToken) return { ok: false, error: 'The room asset credential is not ready.' };
+    const configuredServerUrl = import.meta.env.VITE_SERVER_URL?.trim();
+    const hostedDemoUrl = typeof window !== 'undefined' && window.location.hostname === 'group-canva.pages.dev' ? 'https://group-canvas.onrender.com' : undefined;
+    const base = configuredServerUrl || hostedDemoUrl || (typeof window !== 'undefined' ? window.location.origin : '');
+    try {
+      const response = await fetch(`${base}/api/rooms/${encodeURIComponent(this.roomId)}/assets`, { method: 'POST', headers: { 'content-type': asset.mimeType, 'x-room-token': this.assetToken, 'x-asset-id': asset.id }, body: asset.bytes });
+      if (!response.ok) { const value = await response.json().catch(() => ({})) as { error?: string }; return { ok: false, error: value.error ?? 'The image could not be uploaded.' }; }
+      return { ok: true };
+    } catch { return { ok: false, error: 'The image could not be uploaded.' }; }
+  }
+
+  async downloadAsset(assetId: string): Promise<ArrayBuffer | undefined> {
+    if (!this.assetToken) return undefined;
+    const configuredServerUrl = import.meta.env.VITE_SERVER_URL?.trim();
+    const hostedDemoUrl = typeof window !== 'undefined' && window.location.hostname === 'group-canva.pages.dev' ? 'https://group-canvas.onrender.com' : undefined;
+    const base = configuredServerUrl || hostedDemoUrl || (typeof window !== 'undefined' ? window.location.origin : '');
+    try {
+      const response = await fetch(`${base}/api/rooms/${encodeURIComponent(this.roomId)}/assets/${encodeURIComponent(assetId)}`, { headers: { 'x-room-token': this.assetToken } });
+      return response.ok ? await response.arrayBuffer() : undefined;
+    } catch { return undefined; }
+  }
+
+  restoreHost(document: CanvasDocument, assets: Array<{ id: string; mimeType: string; bytes: ArrayBuffer }>, capability: string): Promise<Result> {
+    return (async () => {
+      for (const asset of assets) { const result = await this.uploadAsset(asset); if (!result.ok) return result; }
+      return new Promise<Result>(resolve => this.socket.emit('room:host-restore', { capability, document }, resolve));
+    })();
+  }
+
+  hostSaved(capability: string, epoch: string, revision: number): void { if (this.socket.connected) this.socket.emit('room:host-saved', { capability, epoch, revision }); }
+  endSession(capability: string): Promise<Result> { return new Promise(resolve => this.socket.emit('room:end', { capability }, resolve)); }
+
+  private startPings(): void {
+    if (this.pingTimer || (typeof document !== 'undefined' && document.visibilityState === 'hidden')) return;
+    this.probePing();
+    this.pingTimer = setInterval(() => this.probePing(), 10_000);
+  }
+
+  private stopPings(): void { clearInterval(this.pingTimer); this.pingTimer = undefined; this.pingOutstanding = false; }
+
+  private probePing(): void {
+    if (!this.socket.connected || !this.state.ready || this.destroyed || this.pingOutstanding || (typeof document !== 'undefined' && document.visibilityState === 'hidden')) return;
+    this.pingOutstanding = true;
+    const started = performance.now();
+    this.socket.timeout(5000).emit('latency:ping', (error?: Error) => {
+      this.pingOutstanding = false;
+      if (error) { this.callbacks.ping?.('Ping unavailable'); return; }
+      this.pingSamples = [...this.pingSamples, Math.max(0, performance.now() - started)].slice(-5);
+      const sorted = [...this.pingSamples].sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
+      this.callbacks.ping?.(`Ping ${Math.round(median)} ms`);
+    });
+  }
+
+  private readonly onVisibilityChange = (): void => {
+    if (typeof document === 'undefined') return;
+    if (document.visibilityState === 'hidden') this.stopPings(); else if (this.state.ready) this.startPings();
+  };
 }
