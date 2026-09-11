@@ -84,3 +84,10 @@ it('hydrates from the current page origin when no server URL is configured', asy
   await expect.poll(() => state.ready, { timeout: 5000 }).toBe(true);
   expect(callbacks.snapshot).toHaveBeenCalled();
 });
+it('stops on a protocol-mismatched snapshot instead of enabling edits', async () => {
+  const { state, peer, callbacks, snapshots } = await setup();
+  const current = snapshots[0]!;
+  peer.emit('room:snapshot', { ...current, protocolVersion: 999 });
+  await expect.poll(() => callbacks.error).toHaveBeenCalledWith(expect.stringMatching(/incompatible|update/i));
+  expect(state.ready).toBe(false);
+});

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fitCamera, screenToWorld, SpatialIndex, worldToScreen, zoomAround, type Viewport } from '../client/viewport';
+import { fitCamera, screenToWorld, SpatialIndex, worldToScreen, zoomAround, panCamera, type Viewport } from '../client/viewport';
 
 const viewport: Viewport = { width: 800, height: 600 };
 
@@ -21,6 +21,12 @@ describe('camera transforms', () => {
     const camera = fitCamera({ left: 100, top: 100, right: 300, bottom: 200 }, viewport, 40);
     expect(camera.zoom).toBeGreaterThan(1);
     expect(camera.zoom).toBeLessThanOrEqual(4);
+  });
+
+  it('clamps camera zoom at both limits while preserving bounded panning', () => {
+    expect(zoomAround({ x: 0, y: 0, zoom: 1 }, 0.001, { x: 400, y: 300 }, viewport).zoom).toBe(0.1);
+    expect(zoomAround({ x: 0, y: 0, zoom: 1 }, 100, { x: 400, y: 300 }, viewport).zoom).toBe(4);
+    expect(panCamera({ x: 100_000, y: -100_000, zoom: 0.1 }, { x: -100_000, y: 100_000 })).toEqual({ x: 100_000, y: -100_000, zoom: 0.1 });
   });
 
   it('culls indexed bounds while retaining oversized objects in an overflow list', () => {

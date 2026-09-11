@@ -173,6 +173,16 @@ describe('authoritative websocket collaboration', () => {
     await new Promise<void>((resolve, reject) => { accepted.once('connect', resolve); accepted.once('connect_error', reject); });
   });
 
+  it('rejects clients using an incompatible protocol version before creating a room', async () => {
+    const server = await start();
+    const socket: Client = io(server.url, { transports: ['websocket'], reconnection: false });
+    clients.push(socket);
+    await new Promise<void>((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); });
+    const result = await new Promise<Result>(resolve => socket.emit('room:join', { roomId: 'protocol-mismatch', name: 'Old client', protocolVersion: 1 }, resolve));
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/newer|version/i) });
+    expect((await (await fetch(`${server.url}/health`)).json()).rooms).toBe(0);
+  });
+
   it('enforces user, stroke and point capacity without partially applying rejected commands', async () => {
     const server = await start({ limits: { usersPerRoom: 2, strokesPerRoom: 2, pointsPerStroke: 2, pointsPerRoom: 3 } });
     const a = (await connect(server.url)).socket;

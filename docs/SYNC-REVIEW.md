@@ -58,3 +58,9 @@ The production renderer remains unchanged by Task 3. The independent `verifyMixe
 The rejected-cache post sample's unfinished-brush control was 16.53 FPS, versus the earlier 60.05–60.09 FPS baseline; the fresh three-repetition no-cache control was 60.16–60.21 FPS. This control strengthens rejection of the experimental cache, while the differing run conditions mean it remains evidence rather than a timing threshold. The experimental source was uncommitted and is not retained; only the raw measurements, reports, and decision remain.
 
 `mixed-tail-post.json` reported `tailCacheBytes` and `tailCacheTiles` as zero for every post scenario, so that historical run exercised the direct fallback rather than retaining cached tiles.
+
+## Roadmap completion review (12 September 2026)
+
+The completion pass added explicit regression coverage for the remaining failure boundaries: protocol mismatch stops the client before editing, removed IndexedDB databases surface a save error after the cached connection closes, zoom remains bounded at 10–400%, managed host recovery stays paused until restore, and asset bytes are authenticated, bounded, and excluded from drawing revisions. The final unit suite passed 87 tests, and Chromium/WebKit passed the full browser matrix. The full Playwright command still reports the pre-existing Windows Firefox `spawn UNKNOWN` launch failure before test bodies; hosted verification was not claimed because the required HTTPS endpoint variables were absent.
+
+The review boundary remains honest: the server is authoritative only within one in-memory process, a backend restart creates a fresh room epoch, and this worktree did not deploy or prove a remote two-device or native Safari run. The benchmark report `benchmarks/results/task8-final.json` retained the ten-client/five-author workload with no missing or duplicate accepted batches and no acknowledgement failures.

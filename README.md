@@ -53,6 +53,21 @@ Live demo: **https://group-canva.pages.dev**. The current backend health endpoin
 
 Cloudflare distributes the interface globally; the drawing stream still travels to the authoritative Singapore server. Render Free can spin down after **15 minutes without inbound traffic**, take **about a minute** to wake, and restart at any time. Restarting clears this app's memory. Free quotas also apply; do not enable paid upgrades or artificial keep-alive requests. See [Render Free](https://render.com/docs/free), [Render regions](https://render.com/docs/regions), and [Cloudflare Vite deployment](https://developers.cloudflare.com/pages/framework-guides/deploy-a-vite3-project/).
 
+## Release verification
+
+From the roadmap worktree, the release gate is:
+
+```powershell
+npm run typecheck
+npm test
+$env:E2E_PORT='3339'; npm run test:e2e
+npm run benchmark -- task8-final
+$env:E2E_BASE_URL='https://your-project.pages.dev'; $env:BENCH_SERVER_URL='https://your-service.onrender.com'; npm run verify:hosted
+npm run build
+```
+
+The hosted verifier requires an HTTPS frontend URL, an HTTPS backend URL, and a backend `ALLOWED_ORIGINS` entry matching the exact frontend origin. If local port 3000 is occupied, use a unique `E2E_PORT` for Playwright or choose a matching `PORT`/`BACKEND_PORT` pair; do not reuse a stale server when validating a new build. Release the backend first, verify `/health` and WebSocket origin handling, then publish the frontend bundle with its `VITE_SERVER_URL`, and retain the previous backend deployment URL and frontend preview URL for rollback. The public deployment is not updated by this worktree and must not be called current until this gate succeeds.
+
 ## Scope and limitations
 
 - Local files and image assets are stored in browser IndexedDB. Use **Download project** for portable backups; clearing browser storage removes local files.

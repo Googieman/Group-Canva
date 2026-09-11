@@ -124,3 +124,23 @@ The roadmap extension added document objects and transactions, bounded camera na
 - Chromium whiteboard browser regression: **3 passed**.
 - A production-style browser smoke check created a local canvas, hosted it, copied an invite without the host capability, and confirmed the guest opened read-only ownership controls.
 - WebKit functional cases passed; two runs also exposed a Playwright-on-Windows trace-artifact teardown error while closing contexts. Firefox remains unavailable in this environment because its downloaded binary fails with Windows `spawn UNKNOWN`.
+
+## Reliability and completion gate (12 September 2026)
+
+The sequential roadmap work was completed on branch `codex/group-canvas-roadmap` through Task 8. The public Render/Pages deployment described above was not changed.
+
+### Commands and results
+
+- `npm run typecheck` — passed.
+- `npm test` — **87 passed** across 12 files.
+- `$env:E2E_PORT=3339; npm run test:e2e` — **40 passed** in Chromium/WebKit; 20 Firefox cases failed before execution because Playwright Firefox launch returns Windows `spawn UNKNOWN`. This is an environment failure, not an application assertion.
+- `npm run benchmark -- task8-final` — passed. The saved same-machine report is [benchmarks/results/task8-final.json](../benchmarks/results/task8-final.json); it retained the ten-client/five-author workload with zero missing batches, zero duplicate batches, and zero acknowledgement failures across three repetitions.
+- `npm run verify:hosted` — not runnable in this environment because `E2E_BASE_URL`/`BENCH_FRONTEND_URL` and `BENCH_SERVER_URL` were not configured. No hosted claim is made from this run.
+- `npm run build` — passed: strict client typecheck, Vite bundle, and server TypeScript build.
+- `git diff --check` — no whitespace errors; Git emitted only LF/CRLF normalization warnings.
+
+Focused final browser checks passed in Chromium and WebKit for local files, images, host recovery, bounded PNG export, IndexedDB deletion recovery, text, shapes, compositing, and the shared whiteboard flows. Failure-injection coverage also covers Socket.IO disconnect/revision recovery, duplicate operations, write failure preservation, protocol mismatch, missing/unauthorized assets, and camera zoom bounds.
+
+### Release and rollback record
+
+Required local configuration is `VITE_SERVER_URL` at frontend build time and an exact frontend origin in backend `ALLOWED_ORIGINS`; local same-origin development can omit `VITE_SERVER_URL`. The known port-conflict recovery is to select a fresh `E2E_PORT` for Playwright or a matched free `PORT`/`BACKEND_PORT` pair. The manual release order is backend deploy and `/health`/WebSocket verification first, frontend bundle publish second, then browser smoke and hosted verification. Preserve the prior backend deployment URL and frontend preview URL as rollback targets. No deploy, merge, or push was performed for this gate.
