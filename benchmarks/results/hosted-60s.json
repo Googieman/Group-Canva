@@ -1,0 +1,111 @@
+{
+  "label": "hosted-60s",
+  "at": "2026-09-11T06:38:44.319Z",
+  "commit": "5c9cff938274399fec129128c011f3dd5358c160",
+  "workingTreeDirty": true,
+  "rendererRef": "working-tree",
+  "platform": "win32",
+  "cpu": "12th Gen Intel(R) Core(TM) i5-12450H",
+  "browser": "153.0.8010.12",
+  "duration": 60000,
+  "repetitions": 1,
+  "phase": "load",
+  "targetKind": "external-url",
+  "oneWayDelayMs": 0,
+  "renders": [],
+  "inputs": [],
+  "loads": [
+    {
+      "rep": 0,
+      "clients": 10,
+      "authors": 5,
+      "batches": 12675,
+      "ticks": 2535,
+      "durationMs": 65813.6041,
+      "expected": 12675,
+      "received": 12675,
+      "receivedEvents": 12675,
+      "duplicates": 0,
+      "duplicateBatchIds": [],
+      "missing": 0,
+      "missingBatchIds": [],
+      "ackFailures": 0,
+      "propagationMs": {
+        "count": 12675,
+        "p50": 141.86599999999817,
+        "p95": 207.5949000000037,
+        "max": 676.9083000000028
+      },
+      "roundTripMs": {
+        "count": 10,
+        "p50": 153.20610000000033,
+        "p95": 309.9899999999998,
+        "max": 309.9899999999998
+      },
+      "batchIntervalMs": {
+        "count": 2534,
+        "p50": 22.416900000003807,
+        "p95": 31.32800000000134,
+        "max": 39.899600000000646
+      },
+      "serverProcessingMs": null,
+      "observer": {
+        "elapsedMs": 65803.89999999851,
+        "frames": 2480,
+        "fps": 37.68773583328733,
+        "batches": 0,
+        "batchesPerSecond": 0,
+        "metrics": {
+          "frameIntervalMs": {
+            "count": 2479,
+            "p50": 16.700000000000728,
+            "p95": 50,
+            "max": 99.90000000000146
+          },
+          "receiveToReduceMs": {
+            "count": 12680,
+            "p50": 0,
+            "p95": 0.10000000149011612,
+            "max": 27.5
+          },
+          "predictionMergeMs": {
+            "count": 12680,
+            "p50": 0,
+            "p95": 0.10000000149011612,
+            "max": 1.1999999955296516
+          },
+          "prefixCompareMs": {
+            "count": 1922,
+            "p50": 0.10000000149011612,
+            "p95": 0.30000000447034836,
+            "max": 1
+          },
+          "surfaceCopyMs": {
+            "count": 1922,
+            "p50": 0,
+            "p95": 0.10000000149011612,
+            "max": 9.100000001490116
+          },
+          "repaintAreaPx": {
+            "count": 1922,
+            "p50": 1820852,
+            "p95": 1820852,
+            "max": 1820852
+          },
+          "tailReplayMs": {
+            "count": 1922,
+            "p50": 0.29999999701976776,
+            "p95": 0.7000000029802322,
+            "max": 1.6000000014901161
+          },
+          "renderMs": {
+            "count": 1922,
+            "p50": 0.7000000029802322,
+            "p95": 1.7000000029802322,
+            "max": 21.19999999552965
+          }
+        }
+      }
+    }
+  ]
+}

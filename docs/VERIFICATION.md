@@ -1,6 +1,6 @@
 # Verification record
 
-Recorded 10 September 2026 (Asia/Calcutta) in the local Group Canvas workspace. The measurements below were collected from the existing repository at commit `24da114` with an intentionally dirty working tree containing the hardening changes. Functional assertions and performance samples are separate commands.
+Recorded 11 September 2026 (Asia/Calcutta) in the local Group Canvas workspace. Functional assertions and performance samples are separate commands. Hosted evidence uses the public GitHub repository [Googieman/Group-Canva](https://github.com/Googieman/Group-Canva).
 
 ## Automated checks
 
@@ -49,20 +49,38 @@ Two exploratory fork runs went through the VS Code tunnel endpoint. They were no
 
 For a real two-device measurement, open the shared room with `&diagnostics=1` in both browsers, reset `window.canvasDiagnostics`, draw for a fixed interval, and save both reports with browser, device, location, network, commit, and scene size. The diagnostics are opt-in, bounded, local, and send no telemetry. Record the supplied endpoint only in local notes; the benchmark report intentionally omits it.
 
-## Hosted baseline readiness (unverified, 11 September 2026)
+## Hosted deployment and validation (11 September 2026)
 
-No hosted baseline was recorded in this workspace. `README.md` states that no hosted demo has been created, `BENCH_SERVER_URL` was unset in the benchmark environment, and no deployed frontend origin or backend URL was supplied. There was also no separate collaborator device available for the required remote run. Accordingly, `benchmarks/results/hosted-same-machine.json` and `benchmarks/results/hosted-remote.json` were intentionally not created; there are no hosted p50/p95, delivery, FPS, or host-side `serverProcessingMs` values to report.
+The public demo is [https://group-canva.pages.dev](https://group-canva.pages.dev), backed by [https://group-canvas.onrender.com](https://group-canvas.onrender.com). The GitHub repository is [Googieman/Group-Canva](https://github.com/Googieman/Group-Canva). Deployment identifiers and revisions:
 
-The deployment configuration is ready for a future run: `render.yaml` specifies one Render Free Node service in Singapore, and the frontend instructions require a build-time `VITE_SERVER_URL` pointing to that service plus an exact Cloudflare Pages origin in backend `ALLOWED_ORIGINS`. The server is configured for Socket.IO's WebSocket transport. These are configuration facts only; this run did not verify a live HTTPS origin, origin acceptance, WebSocket upgrade, authentication interstitial behavior, cold start, or server-side processing.
+- Render workspace: **My Workspace** (`tea-dadmocmq1p3s73ebdp10`); service `srv-dahpds2fngtc73dgmafg`; latest live restart deployment `dep-dahq5h942hec73a195gg`, source commit `5c9cff9`.
+- Cloudflare Pages production project: **group-canva**; production origin `group-canva.pages.dev`; latest manual frontend release served from source `be797a6` (preview URL `https://39550eef.group-canva.pages.dev`). Automatic branch deployments were disabled after the manual release so this validation is reproducible.
+- The Pages build variable `VITE_SERVER_URL` is set to `https://group-canvas.onrender.com`. The client also contains an exact `group-canva.pages.dev` fallback because the initial Pages Worker-style build did not embed the dashboard variable consistently; the deployed bundle was checked for both the Render URL and fallback.
 
-The missing prerequisites are a real deployed HTTPS backend/frontend pair with the exact frontend origin allowed by the backend, and access to a second collaborator device and its browser/network details. Once available, run the identical 60-second `BENCH_PHASE=load`, one-repetition command from the server machine and the separate device, retain both JSON reports, and collect `serverProcessingMs` on the backend host. The existing local and exploratory tunnel evidence above remains separate and must not be labeled as this hosted baseline.
+The hosted transport verifier (`npm run verify:hosted`) recorded the following in `benchmarks/results/hosted-transport.json`:
 
-Remaining validation:
+- Both origins were HTTPS and the Pages response was HTTP 200; Render `/health` returned `status: ok`.
+- An exact `Origin: https://group-canva.pages.dev` was accepted and negotiated Socket.IO's `websocket` transport.
+- An unrelated `Origin: https://unrelated.example` was rejected with a WebSocket error.
 
-- Run native Chrome, Firefox, and Safari on target devices; Playwright WebKit remains a compatibility signal rather than a Safari result.
-- Repeat the ten-client benchmark from a genuinely remote collaborator machine through the tunnel, recording both endpoints and network conditions.
-- Validate the deployed Render and Cloudflare configuration, cold-start behavior, and expected empty in-memory room after a restart.
-- Persistence, shapes, text, selection, and multi-region clock synchronization are outside this MVP and were not added.
+The hosted browser suite ran against the public Pages URL with independent browser contexts: Chromium whiteboard checks **3 passed**, and Playwright WebKit whiteboard checks **3 passed**. These cover live drawing, concurrent brush/eraser behavior, global undo/redo, late joining, room isolation, and offline/reconnect recovery. Firefox remains separately unverified because its downloaded Playwright binary fails to launch on this Windows machine with `spawn UNKNOWN`. Playwright WebKit is a compatibility signal, not native Safari validation.
+
+The 60-second hosted load run is retained as `benchmarks/results/hosted-60s.json`. It used ten clients, five authors, one rendered observer, the public Pages frontend, and the Render backend. The run sent for 60 seconds and allowed a bounded drain; total measured duration was **65.814 seconds**. Results:
+
+| Metric | Measurement |
+| --- | ---: |
+| Expected / unique received / received events | 12,675 / 12,675 / 12,675 |
+| Duplicate batches / missing batches / acknowledgement failures | 0 / 0 / 0 |
+| Propagation p50 / p95 / max | 141.87 / 207.59 / 676.91 ms |
+| Observer frames / measured FPS | 2,480 / 37.69 |
+| Observer frame interval p50 / p95 / max | 16.7 / 50.0 / 99.9 ms |
+| Server processing | unavailable (`null`; not inferred from local timings) |
+
+The benchmark records the Windows platform, CPU, Chromium version, source commit, external frontend/backend URLs, unique batch IDs, duplicates, missing IDs, acknowledgement failures, and the bounded drain. The FPS and latency values are measurements only; this task does not impose an invented performance threshold.
+
+Before publishing the demo, the backend was restarted using the live Render deployment above. The open Brave Pages client reconnected, showed **Live together**, and displayed the expected empty canvas after the in-memory room reset. The transient reset notice was not retained in the final screenshot because it clears after recovery.
+
+Natural Render idle suspension was not observed during this validation window, so no cold-start duration is claimed. A separate device was not available; separate-device collaboration and native Safari validation remain pending. Persistence, shapes, text, selection, and multi-region clock synchronization remain outside this MVP.
 
 See [benchmarks/README.md](../benchmarks/README.md) for commands and metric definitions, and [SYNC-REVIEW.md](SYNC-REVIEW.md) for the synchronization invariants and regression coverage.
 
@@ -88,7 +106,7 @@ The final automated gate passed after rejecting the regressing tile cache:
 
 The authoritative stream remains Socket.IO over WebSocket. Local and controlled-delay measurements show server processing below 1 ms while transport delay dominates when delay is introduced; no hosted evidence isolates a transport defect. A future unreliable cursor channel would require a separate design and is outside this follow-up.
 
-Firefox was not part of this final matrix because its downloaded Playwright binary previously failed to launch on Windows with `spawn UNKNOWN`. Playwright WebKit is a compatibility signal, not native Safari. A deployed HTTPS endpoint, exact frontend origin, cold-start run, host-side processing sample, and genuinely remote collaborator device are still unavailable and remain explicitly unverified above.
+Firefox was not part of this final matrix because its downloaded Playwright binary previously failed to launch on Windows with `spawn UNKNOWN`. Playwright WebKit is a compatibility signal, not native Safari. The deployed HTTPS endpoint, exact frontend origin, WebSocket upgrade, and restart reset were verified above. Natural idle suspension was not observed, so no cold-start duration or host-side processing sample is claimed; a genuinely remote collaborator device remains unavailable and unverified.
 
 The rejected-cache post sample also included an unfinished-brush control at 16.53 FPS versus the earlier 60.05–60.09 FPS baseline. A fresh three-repetition no-cache control in `mixed-tail-no-cache-final.json` returned 60.16–60.21 FPS. The post run had one 3-second repetition and was collected while the experimental cache path was being evaluated; the control is therefore stronger rejection evidence but still not a pass/fail threshold. The accepted renderer remains the no-cache implementation.
 

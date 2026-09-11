@@ -39,12 +39,12 @@ npm run test:e2e     # Browser interactions and canvas pixel assertions
 
 ## Free deployment
 
-Deployment configuration is included; **no hosted demo has been created from this workspace**. Use one Render Free Node service in Singapore and Cloudflare Pages for the frontend. Keep a single backend instance.
+Live demo: **https://group-canva.pages.dev**. The current backend health endpoint is **https://group-canvas.onrender.com/health**. The published validation uses one Render Free Node service in Singapore and Cloudflare Pages for the frontend; deployment identifiers and measurements are recorded in [docs/VERIFICATION.md](docs/VERIFICATION.md).
 
 1. Push this repository to your own Git provider and connect it to Render. Import `render.yaml` (or choose Web Service, Node, **Free**, **Singapore**). Build: `npm ci --include=dev && npm run build`. Start: `node dist/server/server/index.js`. Health check: `/health`.
 2. Set Render's `ALLOWED_ORIGINS` to your exact frontend origin, e.g. `https://your-project.pages.dev`. Comma-separate additional explicit preview/local origins if needed. Do not include a path or trailing slash.
 3. Create a Cloudflare Pages project with build command `npm ci && npm run build`, output directory `dist/client`, and Node version `24.19.0`. Set **build-time** `VITE_SERVER_URL=https://your-service.onrender.com`. Socket.io upgrades this HTTPS endpoint to secure WebSocket transport.
-4. Redeploy the static frontend whenever `VITE_SERVER_URL` changes. Open the public Pages URL in several browsers and repeat the walkthrough.
+4. Redeploy the static frontend whenever `VITE_SERVER_URL` changes. For this repository, the public Pages hostname also has a narrow production-host fallback to the Render URL so the demo remains usable if a Pages build mode fails to inject the public build variable. Open the public Pages URL in several browsers and repeat the walkthrough.
 
 `VITE_SERVER_URL` is public configuration, never a secret. For local development it defaults to the page's origin and Vite proxies `/socket.io` to port 3000. Backend `PORT`, `HOST`, and `ALLOWED_ORIGINS` are process environment variables; `.env.example` is a reference and is not automatically loaded by Node.
 
