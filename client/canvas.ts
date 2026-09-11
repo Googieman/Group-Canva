@@ -145,7 +145,7 @@ function setWorldTransform(ctx: CanvasRenderingContext2D, dpr: number, camera: C
 
 function setDefaultWorldTransform(ctx: CanvasRenderingContext2D, dpr: number): void { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
 
-function drawObject(ctx: CanvasRenderingContext2D, object: CanvasObject, assets: Map<string, CanvasImageSource>): void {
+export function renderDocumentObject(ctx: CanvasRenderingContext2D, object: CanvasObject, assets: Map<string, CanvasImageSource>, fontReady = true): void {
   const x = object.translation.x, y = object.translation.y;
   ctx.globalCompositeOperation = 'source-over';
   if (object.type === 'shape') {
@@ -171,6 +171,7 @@ function drawObject(ctx: CanvasRenderingContext2D, object: CanvasObject, assets:
     return;
   }
   if (object.type === 'text') {
+    if (!fontReady) return;
     ctx.fillStyle = object.color; ctx.font = `${object.fontSize}px Outfit, sans-serif`; ctx.textBaseline = 'top';
     object.text.split('\n').forEach((line, index) => ctx.fillText(line, x, y + index * object.fontSize * object.lineHeight));
     return;
@@ -178,9 +179,13 @@ function drawObject(ctx: CanvasRenderingContext2D, object: CanvasObject, assets:
   if (object.type === 'image') {
     const asset = assets.get(object.assetId);
     if (asset) { try { ctx.drawImage(asset, x, y, object.width, object.height); return; } catch { /* retry after image decode */ } }
-    ctx.strokeStyle = '#a8a1b0'; ctx.setLineDash([6, 4]); ctx.strokeRect(x, y, object.width, object.height); ctx.setLineDash([]);
+    ctx.strokeStyle = '#a8a1b0'; if (typeof ctx.setLineDash === 'function') ctx.setLineDash([6, 4]); ctx.strokeRect(x, y, object.width, object.height); if (typeof ctx.setLineDash === 'function') ctx.setLineDash([]);
     ctx.fillStyle = '#77727d'; ctx.font = '14px Outfit, sans-serif'; ctx.fillText('Image unavailable', x + 10, y + 10);
   }
+}
+
+function drawObject(ctx: CanvasRenderingContext2D, object: CanvasObject, assets: Map<string, CanvasImageSource>, fontReady = true): void {
+  renderDocumentObject(ctx, object, assets, fontReady);
 }
 
 function drawSelection(ctx: CanvasRenderingContext2D, objects: CanvasObject[], selectedIds: Set<string>, marquee: { start: Point; end: Point } | null, lineWidth: number): void {
@@ -228,6 +233,7 @@ export class CanvasBoard {
   private tool: Tool = 'brush';
   private color = '#27272a';
   private width = 4;
+  private fontReady = true;
   private readonly listeners: [string, EventListener][];
 
   constructor(private readonly canvas: HTMLCanvasElement, private readonly callbacks: CanvasCallbacks) {
@@ -282,6 +288,8 @@ export class CanvasBoard {
     this.fullRepaint = true;
     this.invalidate();
   }
+
+  setFontReady(ready: boolean): void { if (this.fontReady === ready) return; this.fontReady = ready; this.fullRepaint = true; this.invalidate(); }
 
   setSelection(ids: Iterable<string>, marquee: { start: Point; end: Point } | null = null): void {
     if (this.destroyed) return;
@@ -677,7 +685,7 @@ export class CanvasBoard {
       for (const object of this.objects) {
         const bounds = objectBounds(object);
         if (!bounds || !intersects(bounds, region)) continue;
-        drawObject(this.context, object, this.assets);
+        drawObject(this.context, object, this.assets, this.fontReady);
       }
       if (diagnostics) replayMs += performance.now() - regionReplayStarted;
       this.context.restore();
@@ -706,7 +714,7 @@ export class CanvasBoard {
     for (const stroke of this.strokes) { const bounds = strokeBounds(stroke); if (!bounds || intersects(bounds, view)) drawStroke(this.context, stroke, this.pathFor(stroke)); }
     this.context.globalCompositeOperation = 'source-over';
     const visibleObjectIds = new Set(this.objectIndex.query(view));
-    for (const object of this.objects) { if (visibleObjectIds.has(object.id)) drawObject(this.context, object, this.assets); }
+    for (const object of this.objects) { if (visibleObjectIds.has(object.id)) drawObject(this.context, object, this.assets, this.fontReady); }
     drawSelection(this.context, this.objects, this.selectedIds, this.marquee, Math.max(1, 1.5 / this.camera.zoom));
     this.context.setTransform(1, 0, 0, 1, 0, 0);
     this.fullRepaint = false;

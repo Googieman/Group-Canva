@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { constrainDrag, hitTestObject } from '../client/objects';
+import { renderDocumentObject } from '../client/canvas';
 import type { CanvasObject } from '../shared/document';
 
 const rectangle: CanvasObject = { id:'r',type:'shape',order:1,version:1,translation:{x:20,y:30},shape:'rectangle',width:100,height:60,strokeColor:'#000000',strokeWidth:4,fill:null };
@@ -36,5 +37,19 @@ describe('canvas object geometry', () => {
     };
     expect(hitTestObject({ x: 150, y: 80 }, ink, 0)).toBe(true);
     expect(hitTestObject({ x: 70, y: 85 }, line, 0)).toBe(true);
+  });
+
+  it('renders multiline text through the shared document object renderer', () => {
+    const calls: Array<[string, number, number]> = [];
+    const context = {
+      globalCompositeOperation: 'source-over', fillStyle: '', font: '', textBaseline: '',
+      fillText(text: string, x: number, y: number) { calls.push([text, x, y]); },
+    } as unknown as CanvasRenderingContext2D;
+    const text: CanvasObject = {
+      id: 'text', type: 'text', order: 1, version: 1, translation: { x: 20, y: 30 },
+      text: 'first line\nsecond line', width: 240, fontSize: 20, color: '#000000', lineHeight: 1.25,
+    };
+    renderDocumentObject(context, text, new Map(), true);
+    expect(calls).toEqual([['first line', 20, 30], ['second line', 20, 55]]);
   });
 });
