@@ -461,6 +461,7 @@ export async function createAppServer(options: ServerOptions = {}) {
       publishLeases(room); return ok;
     }
     if (cmd.type.startsWith('object:')) {
+      if (cmd.type === 'object:create' && cmd.object.type === 'ink') return fail('Network ink creation is not supported. Use streamed stroke commands.');
       const ids = cmd.type === 'object:create' ? [] : cmd.type === 'object:move' || cmd.type === 'object:delete' ? cmd.ids : cmd.type === 'object:resize' || cmd.type === 'object:text' ? [cmd.id] : [];
       const leaseId = 'leaseId' in cmd ? cmd.leaseId : undefined;
       currentLeases(room);
@@ -504,6 +505,7 @@ export async function createAppServer(options: ServerOptions = {}) {
       publish(room, { type: 'stroke:begin', stroke });
       return remember(ok);
     }
+    if ((cmd.type === 'history:undo' || cmd.type === 'history:redo') && currentLeases(room).some(lease => lease.userId !== userId)) return fail('Shared history is unavailable while another participant is editing.');
     if (cmd.type === 'history:undo') {
       if (room.documentMode && room.documentHistory.undo.length) {
         const transaction = room.documentHistory.undo.at(-1)!;
@@ -667,14 +669,14 @@ export async function createAppServer(options: ServerOptions = {}) {
     });
     socket.on('room:resync', () => { if (token()) sendSnapshot(); });
     socket.on('room:host-saved', payload => {
-      if (!room || !room.managed || room.hostSocketId !== socket.id || !record(payload) || payload.capability !== room.hostCapability || payload.epoch !== room.epoch || !Number.isSafeInteger(payload.revision) || payload.revision < 0 || payload.revision > room.revision) { socket.emit('server:error', 'The host save watermark was rejected.'); return; }
-      room.hostWatermark = { epoch: payload.epoch, revision: payload.revision }; if (room.status === 'paused' && room.hostSocketId === socket.id) { room.status = 'active'; announceStatus(room, 'Host saving has recovered. Editing is active again.'); } armHostSaveDeadline(room);
+      if (!room || !room.managed || room.status !== 'active' || room.hostSocketId !== socket.id || !record(payload) || payload.capability !== room.hostCapability || payload.epoch !== room.epoch || !Number.isSafeInteger(payload.revision) || payload.revision < 0 || payload.revision > room.revision) { socket.emit('server:error', 'The host save watermark was rejected.'); return; }
+      room.hostWatermark = { epoch: payload.epoch, revision: payload.revision }; armHostSaveDeadline(room);
       schedulePersistence();
       io.to(`canvas:${room.id}`).emit('room:host-save', room.hostWatermark);
     });
     socket.on('room:end', (payload, ack) => {
       const reply = (result: Result) => { if (typeof ack === 'function') ack(result); };
-      if (!room || !room.managed || room.hostSocketId !== socket.id || !record(payload) || payload.capability !== room.hostCapability) { reply(fail('Only the current host can end this session.')); return; }
+      if (!room || !room.managed || room.status !== 'active' || room.hostSocketId !== socket.id || !record(payload) || payload.capability !== room.hostCapability) { reply(fail('Restore the saved canvas before ending this session.')); return; }
       if (!room.hostWatermark || room.hostWatermark.epoch !== room.epoch || room.hostWatermark.revision < room.revision) { reply(fail('Save the latest canvas before ending the session.')); return; }
       room.status = 'ended'; room.hostSocketId = null; announceStatus(room, 'The host ended this session.'); removeRoom(room); reply(ok);
     });

@@ -296,6 +296,20 @@ describe('authoritative websocket collaboration', () => {
     await new Promise<void>((resolve) => a.emit('latency:ping', () => resolve()));
   });
 
+  it('rejects direct network ink creation while keeping the room unchanged', async () => {
+    const server = await start();
+    const a = (await connect(server.url)).socket;
+    const ink = {
+      id: 'network-ink', type: 'ink' as const, order: 1, version: 1, translation: { x: 0, y: 0 },
+      userId: 'attacker', tool: 'brush' as const, color: '#000000', width: 4,
+      points: [{ x: 10, y: 10 }], completed: true, completionOrder: 1, active: true,
+    };
+    expect(await command(a, { type: 'object:create', object: ink })).toMatchObject({ ok: false, error: expect.stringMatching(/ink|stroke/i) });
+    const state = await resync(a);
+    expect(state.revision).toBe(0);
+    expect(state.document?.objects).toEqual([]);
+  });
+
   it('acquires object edit leases atomically and releases them on disconnect', async () => {
     const server = await start();
     const a = (await connect(server.url)).socket;
@@ -323,6 +337,21 @@ describe('authoritative websocket collaboration', () => {
     const after = await resync(a);
     expect(after.revision).toBe(before.revision);
     expect(after.document?.objects.map(object => object.translation.x)).toEqual(before.document?.objects.map(object => object.translation.x));
+  });
+
+  it('rejects shared undo while another participant holds an active edit lease', async () => {
+    const server = await start();
+    const a = (await connect(server.url)).socket;
+    const b = (await connect(server.url)).socket;
+    const object = { id: 'history-leased', type: 'shape' as const, order: 1, version: 1, translation: { x: 20, y: 30 }, shape: 'rectangle' as const, width: 100, height: 60, strokeColor: '#000000', strokeWidth: 4, fill: null };
+    await command(a, { type: 'object:create', object });
+    expect(await command(a, { type: 'object:lease', ids: ['history-leased'], leaseId: 'lease-a', action: 'acquire' } as Command)).toEqual({ ok: true });
+    const before = await resync(a);
+    expect(await command(b, { type: 'history:undo' })).toMatchObject({ ok: false, error: expect.stringMatching(/lease|editing/i) });
+    const after = await resync(a);
+    expect(after.revision).toBe(before.revision);
+    expect(after.document).toEqual(before.document);
+    expect(after.documentHistory).toEqual(before.documentHistory);
   });
 
   it('rejects reused operation IDs with a different body and evicts old results at the configured bound', async () => {
@@ -511,8 +540,13 @@ describe('authoritative websocket collaboration', () => {
     await new Promise<void>((resolve, reject) => { recovered.once('connect', resolve); recovered.once('connect_error', reject); });
     const recoveredSnapshotPromise = snapshotNext(recovered as Client);
     expect(await new Promise<Result>(resolve => recovered.emit('room:join', { roomId: 'managed', name: 'Host again', host: true, hostCapability: hostSnapshot.hostCapability }, resolve))).toEqual({ ok: true });
-    expect((await recoveredSnapshotPromise).roomStatus).toBe('paused');
+    const recoveredSnapshot = await recoveredSnapshotPromise;
+    expect(recoveredSnapshot.roomStatus).toBe('paused');
     expect(await command(guest as Client, begin('paused-after-reconnect'))).toMatchObject({ ok: false, error: expect.stringContaining('paused') });
+    expect(await new Promise<Result>(resolve => recovered.emit('room:end', { capability: hostSnapshot.hostCapability }, resolve))).toMatchObject({ ok: false, error: expect.stringMatching(/restore|saved/i) });
+    const rejectedSave = new Promise<string>(resolve => recovered.once('server:error', resolve));
+    recovered.emit('room:host-saved', { capability: hostSnapshot.hostCapability, epoch: recoveredSnapshot.epoch, revision: recoveredSnapshot.revision });
+    await expect(rejectedSave).resolves.toMatch(/rejected/i);
     const restoredSnapshotPromise = snapshotNext(recovered as Client);
     const restoredResponse = await fetch(`${server.url}/api/rooms/managed/restore`, {
       method: 'POST',

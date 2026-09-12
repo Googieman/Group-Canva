@@ -27,7 +27,6 @@ export async function renderHome(root: HTMLElement, storage: CanvasStorage): Pro
       const date = document.createElement('span'); date.textContent = `Edited ${formatDate(file.updatedAt)}`; info.append(title, date); info.addEventListener('click', () => go(file.id));
       const actions = document.createElement('div'); actions.className = 'file-card-actions';
       const action = (label: string, handler: () => void) => { const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.addEventListener('click', handler); actions.append(button); };
-      action('Rename', async () => { const next = window.prompt('Canvas name', file.title)?.trim(); if (!next || next === file.title) return; try { await storage.saveFile({ ...file, title: next, updatedAt: Date.now(), document: { ...file.document, title: next } }); await refresh(); } catch (error) { notify(error instanceof Error ? error.message : 'Unable to rename this canvas.'); } });
       action('Duplicate', async () => { try { await storage.duplicateFile(file.id); await refresh(); } catch (error) { notify(error instanceof Error ? error.message : 'Unable to duplicate this canvas.'); } });
       action('Host', () => { window.location.href = `/?host=${encodeURIComponent(file.id)}`; });
       action('Delete', async () => { if (!window.confirm(`Delete “${file.title}”?`)) return; try { await storage.deleteFile(file.id); await refresh(); } catch (error) { notify(error instanceof Error ? error.message : 'Unable to delete this canvas.'); } });
