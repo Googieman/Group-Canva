@@ -156,6 +156,7 @@ export class Connection {
     this.state.disconnect();
     this.callbacks.status('connecting', 'Retrying…');
     this.armHydrationTimeout();
+    if (this.socket.connected) this.socket.disconnect();
     this.socket.connect();
   }
   private armHydrationTimeout() {

@@ -27,6 +27,21 @@ describe('local canvas storage', () => {
     expect((await storage.getFile('file-1'))?.title).toBe('Original');
   });
 
+  it('rejects a save when a referenced image has no stored bytes', async () => {
+    const storage = new CanvasStorage({ forceMemory: true }); stores.push(storage);
+    const document = {
+      ...createDocument('doc-1', 'Missing asset'),
+      assetIds: ['asset-1'],
+      objects: [{
+        id: 'image-1', type: 'image' as const, order: 1, version: 1,
+        translation: { x: 10, y: 10 }, assetId: 'asset-1', intrinsicWidth: 1, intrinsicHeight: 1,
+        width: 10, height: 10,
+      }],
+    };
+    await expect(storage.saveFile({ id: 'file-missing-assets', title: 'Missing asset', createdAt: 1, updatedAt: 2, document, assets: [], revision: 0, roomEpoch: null, camera: { x: 0, y: 0, zoom: 1 } })).rejects.toThrow(/asset.*bytes/i);
+    expect(await storage.getFile('file-missing-assets')).toBeUndefined();
+  });
+
   it('allows only one local writer for a file and releases it safely', async () => {
     const firstStorage = new CanvasStorage({ forceMemory: true });
     const secondStorage = new CanvasStorage({ forceMemory: true });

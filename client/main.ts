@@ -34,7 +34,7 @@ function downloadBlob(blob: Blob, name: string): void { const url = URL.createOb
 async function startEditor(rootElement: HTMLElement, localStorage: CanvasStorage, roomId: string | null, fileId: string | null, hostFileId: string | null): Promise<void> {
   const ui = createUI(rootElement); const state = new DrawingState();
   const isHostSession = !!hostFileId; const sessionRoomId = roomId ?? (isHostSession ? randomId('room').slice(0, 40) : null); const isSharedSession = sessionRoomId !== null;
-  let localFile: LocalFile | undefined; let localWriter: WriterLease | undefined; let connection: Connection | undefined; let enabled = false; let selfId = 'local'; let users: User[] = []; let hostCapability: string | undefined; let hostRestored = !isHostSession; let hostRestorePending = isHostSession; let hostRecoveryGeneration = 0; let localDocumentMode = false;
+  let localFile: LocalFile | undefined; let hostRecoverySource: LocalFile | undefined; let localWriter: WriterLease | undefined; let connection: Connection | undefined; let enabled = false; let selfId = 'local'; let users: User[] = []; let hostCapability: string | undefined; let hostRestored = !isHostSession; let hostRestorePending = isHostSession; let hostRecoveryFailed = false; let hostRecoveryGeneration = 0; let localDocumentMode = false;
   let board!: CanvasBoard;
   let settings: ToolSettings = { tool: 'brush', color: '#5446d4', width: 6, fontSize: 28 };
   let activeId: string | null = null; let offset = 1; const pending: Point[] = []; const predictions = new Map<string, Stroke>();
@@ -55,7 +55,7 @@ async function startEditor(rootElement: HTMLElement, localStorage: CanvasStorage
     pumpAssetLoads();
   });
   const cursors = new Map<string, { element: HTMLElement; updated: number; point: Point }>();
-  let fontReadyScheduled = false;
+  let fontReadyScheduled = false; let fontsReady = typeof document.fonts === 'undefined' || document.fonts.status === 'loaded';
   async function hydrateAssets(assets: Array<{ id: string; mimeType: StoredAsset['mimeType']; bytes: ArrayBuffer }>): Promise<void> { await Promise.all(assets.map(async asset => { try { loadedAssets.set(asset.id, await decodeImageAsset(asset)); } catch { /* Keep a visible placeholder and allow a later retry. */ } })); if (board) render(); }
   function loadRemoteAsset(meta: AssetMeta): Promise<void> {
     if (loadedAssets.has(meta.id)) return Promise.resolve();
@@ -83,19 +83,55 @@ async function startEditor(rootElement: HTMLElement, localStorage: CanvasStorage
     if (!localFile) { if (fileId || hostFileId) window.location.href = '/'; return; }
     if (isHostSession) hostCapability = localFile.hostCapability;
     localWriter = await localStorage.claimWriter(fileId ?? hostFileId!);
-    state.hydrate({ epoch: `local-${localFile.id}`, revision: localFile.revision, roomId: localFile.id, selfId, strokes: documentToLegacyStrokes(localFile.document), redoIds: [], users: [{ id: selfId, name: 'You', color: '#5446d4' }], document: localFile.document, documentHistory: createHistory() });
+    state.hydrate({ epoch: `local-${localFile.id}`, revision: localFile.revision, roomId: localFile.id, selfId, strokes: documentToLegacyStrokes(localFile.document), redoIds: [], users: [{ id: selfId, name: 'You', color: '#5446d4' }], document: localFile.document, documentHistory: localFile.history ?? createHistory() });
     localDocumentMode = true;
     void hydrateAssets(localFile.assets);
-    enabled = !isHostSession && !localWriter.readOnly; users = [{ id: selfId, name: 'You', color: '#5446d4' }]; if (localWriter.readOnly) { ui.setReadOnly(true); ui.canvas.closest('.app-shell')?.classList.add('local-read-only'); }
+    enabled = !isHostSession && !localWriter.readOnly; users = [{ id: selfId, name: 'You', color: '#5446d4' }]; if (isHostSession) hostRecoverySource = structuredClone(localFile); if (localWriter.readOnly) { ui.setReadOnly(true); ui.canvas.closest('.app-shell')?.classList.add('local-read-only'); }
   }
   if (!fileId || hostFileId) {
     connection = new Connection(state, sessionRoomId!, isHostSession ? 'Host' : `Guest ${Math.floor(Math.random() * 9000 + 1000)}`, {
-      status(status, message) { if (isHostSession && (status === 'connecting' || status === 'disconnected')) { hostRecoveryGeneration++; hostRestored = false; } enabled = status === 'connected' && (!isHostSession || !hostRestorePending); if (!enabled) discardLocal(); if (!board) return; board.setEnabled(enabled); ui.setConnection(status === 'connected' && isHostSession && hostRestorePending ? 'syncing' : status, status === 'connected' && isHostSession && hostRestorePending ? 'Restoring the saved canvas…' : message); render(); },
-      snapshot(snapshot, reset) { selfId = snapshot.selfId; hostCapability = snapshot.hostCapability ?? hostCapability; const hostCapabilitySave = isHostSession && snapshot.hostCapability && localFile && localFile.hostCapability !== snapshot.hostCapability && !localWriter?.readOnly ? (localFile = { ...localFile, hostCapability: snapshot.hostCapability }, localStorage.saveFile(localFile).catch(() => {})) : Promise.resolve(); predictions.clear(); pending.length = 0; activeId = null; ui.setFile(isHostSession ? (localFile?.title ?? 'Shared canvas') : `Shared canvas · ${snapshot.roomId}`, 'saved'); const invite = new URL(window.location.href); invite.search = `?room=${encodeURIComponent(snapshot.roomId)}`; ui.setInviteUrl(invite.toString()); if (isHostSession && hostFileId) { const hostUrl = new URL(window.location.href); hostUrl.search = `?room=${encodeURIComponent(snapshot.roomId)}&host=${encodeURIComponent(hostFileId)}`; window.history.replaceState(null, '', hostUrl); } if (!isHostSession) ui.setSaveLabel(snapshot.hostWatermark ? 'Saved by host' : 'Waiting for host save'); if (snapshot.assets?.length) void Promise.all(snapshot.assets.map(meta => loadRemoteAsset(meta))); ui.setReadOnly(isHostSession ? (!snapshot.host || !!localWriter?.readOnly) : true); ui.setHost(!!snapshot.host && isHostSession && !localWriter?.readOnly); if (reset) { hostRestored = false; hostRestorePending = isHostSession; ui.notify('The server restarted. This is a fresh canvas.'); } if (isHostSession && snapshot.host && !localWriter?.readOnly && localFile && hostCapability && connection && !hostRestored) { hostRestored = true; hostRestorePending = true; const recoveryAttempt = ++hostRecoveryGeneration; const useServerDocument = !!snapshot.document && snapshot.epoch === localFile.roomEpoch && snapshot.revision >= localFile.revision; void hostCapabilitySave.then(() => connection!.restoreHost(useServerDocument ? snapshot.document! : localFile!.document, localFile!.assets, hostCapability!, { epoch: useServerDocument ? snapshot.epoch : localFile!.roomEpoch, revision: useServerDocument ? snapshot.revision : localFile!.revision })).then(result => { if (recoveryAttempt !== hostRecoveryGeneration || !state.ready) return; hostRestorePending = false; enabled = result.ok && connection !== undefined; board?.setEnabled(enabled); if (result.ok) ui.setConnection('connected'); else { hostRestored = false; ui.setConnection('disconnected', result.error); ui.notify(result.error); } }); } for (const stroke of snapshot.strokes) if (stroke.userId === selfId && !stroke.completed) connection?.send({ type: 'stroke:cancel', id: stroke.id }); },
+      status(status, message) { if (isHostSession && (status === 'connecting' || status === 'disconnected')) { hostRecoveryGeneration++; hostRestored = false; hostRestorePending = true; hostRecoveryFailed = false; } enabled = status === 'connected' && (!isHostSession || !hostRestorePending); if (!enabled) discardLocal(); if (!board) return; board.setEnabled(enabled); ui.setConnection(status === 'connected' && isHostSession && hostRestorePending ? 'syncing' : status, status === 'connected' && isHostSession && hostRestorePending ? 'Restoring the saved canvas…' : message); render(); },
+      snapshot(snapshot, reset) {
+        selfId = snapshot.selfId;
+        hostCapability = snapshot.hostCapability ?? hostCapability;
+        const hostCapabilitySave = isHostSession && snapshot.hostCapability && localFile && localFile.hostCapability !== snapshot.hostCapability && !localWriter?.readOnly
+          ? (localFile = { ...localFile, hostCapability: snapshot.hostCapability }, localStorage.saveFile(localFile).catch(() => {}))
+          : Promise.resolve();
+        predictions.clear(); pending.length = 0; activeId = null;
+        ui.setFile(isHostSession ? (localFile?.title ?? 'Shared canvas') : `Shared canvas · ${snapshot.roomId}`, 'saved');
+        const invite = new URL(window.location.href); invite.search = `?room=${encodeURIComponent(snapshot.roomId)}`; ui.setInviteUrl(invite.toString());
+        if (isHostSession && hostFileId) { const hostUrl = new URL(window.location.href); hostUrl.search = `?room=${encodeURIComponent(snapshot.roomId)}&host=${encodeURIComponent(hostFileId)}`; window.history.replaceState(null, '', hostUrl); }
+        if (!isHostSession) ui.setSaveLabel(snapshot.hostWatermark ? 'Saved by host' : 'Waiting for host save');
+        if (snapshot.assets?.length) void Promise.all(snapshot.assets.map(meta => loadRemoteAsset(meta)));
+        ui.setReadOnly(isHostSession ? (!snapshot.host || !!localWriter?.readOnly) : true);
+        ui.setHost(!!snapshot.host && isHostSession && !localWriter?.readOnly);
+        if (reset) { hostRestored = false; hostRestorePending = isHostSession; hostRecoveryFailed = false; ui.notify('The server restarted. This is a fresh canvas.'); }
+        const recoveryFile = hostRecoverySource ?? localFile;
+        if (isHostSession && snapshot.host && !localWriter?.readOnly && recoveryFile && hostCapability && connection && !hostRestored) {
+          hostRestored = true; hostRestorePending = true; hostRecoveryFailed = false;
+          const recoveryAttempt = ++hostRecoveryGeneration;
+          const serverIsNewer = snapshot.revision > recoveryFile.revision;
+          const useServerDocument = !!snapshot.document && (serverIsNewer || (snapshot.epoch === recoveryFile.roomEpoch && snapshot.revision >= recoveryFile.revision));
+          void hostCapabilitySave.then(() => connection!.restoreHost(
+            useServerDocument ? snapshot.document! : recoveryFile.document,
+            recoveryFile.assets,
+            hostCapability!,
+            { epoch: useServerDocument ? snapshot.epoch : recoveryFile.roomEpoch, revision: useServerDocument ? snapshot.revision : recoveryFile.revision },
+          )).then(result => {
+            if (recoveryAttempt !== hostRecoveryGeneration || !state.ready) return;
+            hostRestorePending = false;
+            enabled = result.ok && connection !== undefined;
+            board?.setEnabled(enabled);
+            if (result.ok) { hostRecoveryFailed = false; ui.setConnection('connected'); }
+            else { hostRestored = false; hostRecoveryFailed = true; preserveHostRecoverySource(); ui.setConnectionError?.(result.error); ui.notify(result.error); }
+          });
+        }
+        for (const stroke of snapshot.strokes) if (stroke.userId === selfId && !stroke.completed) connection?.send({ type: 'stroke:cancel', id: stroke.id });
+      },
       drawing() { render(); if (isHostSession && !hostRestorePending) scheduleSave(); },
       users(value) { users = value; ui.setUsers(users, selfId); for (const [id, cursor] of cursors) if (!users.some(user => user.id === id)) { cursor.element.remove(); cursors.delete(id); } },
       cursor({ userId, point }) { if (userId === selfId) return; const user = users.find(candidate => candidate.id === userId); if (!user) return; if (!point) { cursors.get(userId)?.element.remove(); cursors.delete(userId); return; } let cursor = cursors.get(userId); if (!cursor) { const element = document.createElement('div'); element.className = 'remote-cursor'; const arrow = document.createElement('span'); arrow.className = 'cursor-arrow'; arrow.textContent = '➤'; const label = document.createElement('span'); label.className = 'cursor-label'; label.textContent = user.name; element.append(arrow, label); element.style.setProperty('--cursor-color', user.color); ui.cursors.append(element); cursor = { element, updated: performance.now(), point }; cursors.set(userId, cursor); } cursor.updated = performance.now(); cursor.point = point; const screen = worldToScreen(point, { width: BOARD_WIDTH, height: BOARD_HEIGHT }, board.getCamera()); cursor.element.style.left = `${screen.x / BOARD_WIDTH * 100}%`; cursor.element.style.top = `${screen.y / BOARD_HEIGHT * 100}%`; },
-      error(message) { ui.notify(message); }, connectionError(message) { enabled = false; discardLocal(); ui.setConnectionError?.(message); render(); }, asset: loadRemoteAsset, ping(label) { ui.setPing(label); }, hostSave(watermark) { if (!isHostSession) ui.setSaveLabel(watermark ? 'Saved by host' : 'Waiting for host save'); }, roomStatus(value) { enabled = value.status === 'active' && (!localWriter || !localWriter.readOnly) && (!isHostSession || !hostRestorePending); if (value.status === 'paused' && isHostSession) void saveNow(); if (value.status === 'ended') { ui.setHost(false); ui.setReadOnly(true); } if (value.status !== 'active') discardLocal(); if (board) board.setEnabled(enabled); if (value.status === 'paused') ui.setConnection('disconnected', value.message ?? 'Waiting for the host to reconnect…'); else if (value.status === 'ended') { ui.setConnection('disconnected', value.message ?? 'Session ended.'); } else if (value.status === 'active') { ui.setConnection('connected'); render(); } },
+      error(message) { ui.notify(message); }, connectionError(message) { enabled = false; if (isHostSession) { hostRestorePending = false; hostRecoveryFailed = true; preserveHostRecoverySource(); } discardLocal(); ui.setConnectionError?.(message); render(); }, asset: loadRemoteAsset, ping(label) { ui.setPing(label); }, hostSave(watermark) { if (!isHostSession) ui.setSaveLabel(watermark ? 'Saved by host' : 'Waiting for host save'); }, roomStatus(value) { enabled = value.status === 'active' && (!localWriter || !localWriter.readOnly) && (!isHostSession || (!hostRestorePending && !hostRecoveryFailed)); if (value.status === 'paused' && isHostSession) void saveNow(); if (value.status === 'ended') { ui.setHost(false); ui.setReadOnly(true); } if (value.status !== 'active') discardLocal(); if (board) board.setEnabled(enabled); if (value.status === 'paused') ui.setConnection('disconnected', value.message ?? 'Waiting for the host to reconnect…'); else if (value.status === 'ended') { ui.setConnection('disconnected', value.message ?? 'Session ended.'); } else if (value.status === 'active') { ui.setConnection('connected'); render(); } },
     }, isHostSession ? { host: true, ...(localFile?.hostCapability ? { hostCapability: localFile.hostCapability } : {}) } : undefined);
     ui.onRetry?.(() => connection?.retry());
     if (!isHostSession) ui.setReadOnly(true);
@@ -104,8 +140,9 @@ async function startEditor(rootElement: HTMLElement, localStorage: CanvasStorage
   function render(): void {
     if (!fontReadyScheduled) {
       fontReadyScheduled = true;
-      board.setFontReady(typeof document.fonts === 'undefined' || document.fonts.status === 'loaded');
-      void (document.fonts?.ready ?? Promise.resolve()).then(() => board.setFontReady(true));
+      fontsReady = typeof document.fonts === 'undefined' || document.fonts.status === 'loaded';
+      board.setFontReady(fontsReady);
+      void (document.fonts?.ready ?? Promise.resolve()).then(() => { fontsReady = true; board.setFontReady(true); });
     }
     const started = diagnostics ? performance.now() : 0;
     const strokes = state.strokes.map(stroke => { const prediction = predictions.get(stroke.id); if (stroke.completed) { predictions.delete(stroke.id); return stroke; } return prediction && prediction.points.length > stroke.points.length ? { ...stroke, points: prediction.points } : stroke; });
@@ -115,6 +152,17 @@ async function startEditor(rootElement: HTMLElement, localStorage: CanvasStorage
   }
   function flush(): void { while (activeId && pending.length && enabled) { const points = pending.splice(0, BATCH_SIZE); if (!send({ type: 'stroke:points', id: activeId, offset, points, operationId: randomId('operation') })) break; offset += points.length; } }
   function discardLocal(): void { activeId = null; pending.length = 0; predictions.clear(); draftObject = null; draftStart = null; releaseSelectionLease(); selectedIds.clear(); moveDelta = { x: 0, y: 0 }; closeTextEditor(); board?.setEnabled(false); cursors.forEach(cursor => cursor.element.remove()); cursors.clear(); }
+  function preserveHostRecoverySource(): void {
+    if (!hostRecoverySource) return;
+    state.disconnect();
+    state.epoch = '';
+    state.revision = hostRecoverySource.revision;
+    state.document = structuredClone(hostRecoverySource.document);
+    state.documentHistory = structuredClone(hostRecoverySource.history ?? createHistory());
+    state.strokes = documentToLegacyStrokes(state.document);
+    state.redoIds = [];
+    render();
+  }
   function ensureLocalDocumentMode(): void { localDocumentMode = true; if (!state.documentHistory) state.documentHistory = createHistory(); }
   function localStrokeCommand(command: Extract<Command, { type: `stroke:${string}` }> | { type: 'history:undo' } | { type: 'history:redo' }): boolean {
     const changeRevision = state.revision + 1; let change: import('../shared/protocol').Change;
@@ -159,8 +207,9 @@ async function startEditor(rootElement: HTMLElement, localStorage: CanvasStorage
     return localDocumentCommand(command as DocumentCommand);
   }
   let saveTimer: ReturnType<typeof setTimeout> | undefined; let maxSaveTimer: ReturnType<typeof setTimeout> | undefined; let dirtySince = 0; let dirtyVersion = 0; let capturedDirtyVersion = 0; let capturedFile: LocalFile | undefined; let saveCoordinator: SaveCoordinator;
+  function hostRecoveryBlocked(): boolean { return isHostSession && (hostRestorePending || hostRecoveryFailed); }
   function markDirty(): void {
-    if (!localFile || localWriter?.readOnly) return;
+    if (!localFile || localWriter?.readOnly || hostRecoveryBlocked()) return;
     dirtyVersion++;
     saveCoordinator.markDirty();
     if (!dirtySince) { dirtySince = Date.now(); maxSaveTimer = setTimeout(() => { void saveNow(); }, 5000); }
@@ -168,9 +217,10 @@ async function startEditor(rootElement: HTMLElement, localStorage: CanvasStorage
   }
   async function saveNow(): Promise<boolean> {
     if (!localFile || localWriter?.readOnly) return false;
+    if (hostRecoveryBlocked()) { ui.setFile(localFile.title, 'error', 'Host recovery is still pending. Retry after the shared canvas reconnects.'); return false; }
     return saveCoordinator.save();
   }
-  function snapshotForSave(): LocalFile { if (!localFile || !state.document) throw new Error('There is no committed canvas to save.'); return { ...localFile, updatedAt: Date.now(), document: { ...state.document, title: localFile.title }, revision: state.revision, camera: board.getCamera(), roomEpoch: isHostSession ? state.epoch : localFile.roomEpoch }; }
+  function snapshotForSave(): LocalFile { if (!localFile || !state.document) throw new Error('There is no committed canvas to save.'); return { ...localFile, updatedAt: Date.now(), document: { ...state.document, title: localFile.title }, history: state.documentHistory ? structuredClone(state.documentHistory) : localFile.history, revision: state.revision, camera: board.getCamera(), roomEpoch: isHostSession ? state.epoch : localFile.roomEpoch }; }
   saveCoordinator = createSaveCoordinator({
     capture: () => { capturedFile = localFile; capturedDirtyVersion = dirtyVersion; return snapshotForSave(); },
     write: async snapshot => {
@@ -180,6 +230,7 @@ async function startEditor(rootElement: HTMLElement, localStorage: CanvasStorage
     },
     onSaved: snapshot => {
       if (localFile === capturedFile) localFile = snapshot;
+      if (hostRecoveryBlocked()) { ui.setFile(localFile?.title ?? snapshot.title, 'error', 'Host recovery is still pending. The server was not told this save completed.'); return; }
       if (isHostSession && hostCapability && snapshot.roomEpoch) connection?.hostSaved(hostCapability, snapshot.roomEpoch, snapshot.revision);
       ui.setFile(localFile?.title ?? snapshot.title, 'saved');
       if (dirtyVersion === capturedDirtyVersion) { dirtySince = 0; clearTimeout(saveTimer); clearTimeout(maxSaveTimer); saveTimer = undefined; maxSaveTimer = undefined; }

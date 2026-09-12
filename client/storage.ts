@@ -1,4 +1,4 @@
-import type { CanvasDocument, DocumentHistory } from '../shared/document';
+import { validateDocument, type CanvasDocument, type DocumentHistory } from '../shared/document';
 
 export interface StoredAsset {
   id: string;
@@ -35,6 +35,22 @@ const memoryWriters = new Map<string, string>();
 function copy<T>(value: T): T { return structuredClone(value); }
 function randomId(prefix: string): string {
   try { return `${prefix}-${crypto.randomUUID()}`; } catch { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+}
+
+function validateStoredFile(file: LocalFile): void {
+  const documentResult = validateDocument(file.document);
+  if (!documentResult.ok) throw new Error(`Cannot save this canvas: ${documentResult.error}`);
+  const assets = new Map<string, StoredAsset>();
+  for (const asset of file.assets) {
+    if (assets.has(asset.id)) throw new Error(`Cannot save this canvas: duplicate asset ${asset.id}.`);
+    assets.set(asset.id, asset);
+  }
+  for (const assetId of file.document.assetIds) {
+    const asset = assets.get(assetId);
+    if (!asset || !(asset.bytes instanceof ArrayBuffer) || asset.bytes.byteLength === 0) {
+      throw new Error(`Cannot save this canvas: image asset ${assetId} has no stored bytes.`);
+    }
+  }
 }
 
 export class CanvasStorage {
@@ -117,6 +133,7 @@ export class CanvasStorage {
   async saveFile(file: LocalFile): Promise<void> {
     if (this.failNextSave) { this.failNextSave = false; throw new Error('Unable to save this canvas on the device.'); }
     const next = copy(file);
+    validateStoredFile(next);
     if (this.memory) {
       const previous = memoryFiles.get(next.id);
       try {
