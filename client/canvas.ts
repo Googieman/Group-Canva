@@ -413,6 +413,10 @@ export class CanvasBoard {
 
   private onMove(event: PointerEvent): void {
     if (event.pointerType === 'touch') { this.onTouchMove(event); return; }
+    this.movePointer(event);
+  }
+
+  private movePointer(event: PointerEvent): void {
     if (!this.enabled || (this.pointerId !== null && event.pointerId !== this.pointerId) || (this.panPointerId !== null && event.pointerId !== this.panPointerId)) return;
     if (this.panPointerId === event.pointerId) {
       if (this.panLast) this.setCamera(panCamera(this.camera, { x: event.clientX - this.panLast.x, y: event.clientY - this.panLast.y }));
@@ -439,7 +443,7 @@ export class CanvasBoard {
       this.touchGesture = next;
       return;
     }
-    this.onMove({ ...event, pointerType: 'mouse' } as PointerEvent);
+    this.movePointer(event);
   }
 
   private touchMetrics(): { center: Point; distance: number } {
