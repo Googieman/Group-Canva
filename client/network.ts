@@ -92,7 +92,10 @@ export class Connection {
       const result = state.receive(event);
       diagnostics?.record('receiveToReduceMs',performance.now()-started);
       if (result === 'resync') this.resync();
-      if (result === 'applied') callbacks.drawing();
+      if (result === 'applied') {
+        callbacks.drawing();
+        if (event.change.type === 'document:transaction' && event.change.document.assetIds.some(assetId => !this.assetIds.has(assetId))) this.resync();
+      }
     });
     this.socket.on('presence:update', users => callbacks.users(users));
     this.socket.on('cursor:update', cursor => callbacks.cursor(cursor));
