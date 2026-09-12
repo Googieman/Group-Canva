@@ -64,7 +64,7 @@ export class DrawingState {
       }
       if (replacement) this.strokes = this.strokes.map(s => s.id === c.id ? replacement! : s);
     }
-    if (this.document) {
+    if (this.document && !this.documentHistory) {
       const legacy = legacyStrokesToDocument(this.strokes.filter(stroke => stroke.completed && stroke.active), this.document.id, this.document.title);
       const nonInk = this.document.objects.filter(object => object.type !== 'ink');
       const priorInk = new Map(this.document.objects.filter((object): object is Extract<CanvasDocument['objects'][number], { type: 'ink' }> => object.type === 'ink').map(object => [object.id, object]));

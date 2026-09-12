@@ -1,7 +1,7 @@
 import { io, type Socket } from 'socket.io-client';
 import type { CanvasDocument } from '../shared/document';
 import { PROTOCOL_VERSION } from '../shared/protocol';
-import type { ClientEvents, Command, Cursor, Point, ServerEvents, Snapshot, User, Result } from '../shared/protocol';
+import type { AssetMeta, ClientEvents, Command, Cursor, Point, ServerEvents, Snapshot, User, Result } from '../shared/protocol';
 import { DrawingState } from './state';
 import { diagnostics } from './diagnostics';
 
@@ -17,6 +17,7 @@ interface Callbacks {
   roomStatus?(status: { status: 'active' | 'paused' | 'ended'; message?: string }): void;
   hostSave?(watermark: { epoch: string; revision: number } | null): void;
   connectionError?(message: string): void;
+  asset?(asset: AssetMeta): void;
 }
 interface ConnectionOptions { host?: boolean; hostCapability?: string }
 export function resolveSocketEndpoint(): string | undefined {
@@ -94,11 +95,11 @@ export class Connection {
       if (result === 'resync') this.resync();
       if (result === 'applied') {
         callbacks.drawing();
-        if (event.change.type === 'document:transaction' && event.change.document.assetIds.some(assetId => !this.assetIds.has(assetId))) this.resync();
       }
     });
     this.socket.on('presence:update', users => callbacks.users(users));
     this.socket.on('cursor:update', cursor => callbacks.cursor(cursor));
+    this.socket.on('asset:update', asset => { this.assetIds.add(asset.id); callbacks.asset?.(asset); });
     this.socket.on('server:error', message => callbacks.error(message));
     this.socket.on('room:status', status => { this.roomPaused = status.status !== 'active'; callbacks.roomStatus?.(status); });
     this.socket.on('room:host-save', watermark => callbacks.hostSave?.(watermark));
@@ -193,10 +194,24 @@ export class Connection {
     } catch { return undefined; }
   }
 
-  restoreHost(document: CanvasDocument, assets: Array<{ id: string; mimeType: string; bytes: ArrayBuffer }>, capability: string): Promise<Result> {
+  restoreHost(document: CanvasDocument, assets: Array<{ id: string; mimeType: string; bytes: ArrayBuffer }>, capability: string, source?: { epoch: string | null; revision: number }): Promise<Result> {
     return (async () => {
       for (const asset of assets) { if (this.assetIds.has(asset.id)) continue; const result = await this.uploadAsset(asset); if (!result.ok) return result; }
-      return new Promise<Result>(resolve => this.socket.emit('room:host-restore', { capability, document }, resolve));
+      if (!this.assetToken) return { ok: false, error: 'The room recovery credential is not ready.' };
+      const base = resolveSocketEndpoint() || '';
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
+      try {
+        const response = await fetch(`${base}/api/rooms/${encodeURIComponent(this.roomId)}/restore`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-room-token': this.assetToken },
+          body: JSON.stringify({ capability, document, ...(source ? { sourceEpoch: source.epoch, sourceRevision: source.revision } : {}) }),
+          signal: controller.signal,
+        });
+        const value = await response.json().catch(() => ({})) as Result;
+        return response.ok && value.ok ? value : { ok: false, error: !value.ok && value.error ? value.error : 'The saved canvas could not be restored.' };
+      } catch { return { ok: false, error: 'The saved canvas could not be restored before the recovery window expired.' }; }
+      finally { clearTimeout(timeout); }
     })();
   }
 

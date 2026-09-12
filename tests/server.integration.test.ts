@@ -374,7 +374,73 @@ describe('authoritative websocket collaboration', () => {
     expect(await command(a, { type: 'object:move', ids: ['moved-ink'], delta: { x: 10, y: 5 }, expectedVersions: { 'moved-ink': 1 } })).toEqual({ ok: true });
     await complete(a, 'later-stroke');
     const state = await resync(a);
-    expect(state.document?.objects.find(object => object.id === 'moved-ink')).toMatchObject({ translation: { x: 10, y: 5 }, points: [{ x: 10, y: 10 }] });
+    expect(state.document?.objects.find(object => object.id === 'moved-ink')).toMatchObject({ translation: { x: 10, y: 5 }, points: [{ x: 10, y: 10 }], version: 2 });
+    expect(await command(a, { type: 'history:undo' })).toEqual({ ok: true });
+    expect(await command(a, { type: 'history:undo' })).toEqual({ ok: true });
+    expect(await command(a, { type: 'history:undo' })).toEqual({ ok: true });
+    expect((await resync(a)).document?.objects.find(object => object.id === 'moved-ink')).toBeUndefined();
+  });
+
+  it('rejects stale same-epoch host recovery without discarding newer room work', async () => {
+    const server = await start();
+    const host = io(server.url, { transports: ['websocket'], reconnection: false });
+    clients.push(host as Client);
+    await new Promise<void>((resolve, reject) => { host.once('connect', resolve); host.once('connect_error', reject); });
+    const initialSnapshotPromise = snapshotNext(host as Client);
+    await new Promise<Result>(resolve => host.emit('room:join', { roomId: 'stale-recovery', name: 'Host', host: true }, resolve));
+    const initial = await initialSnapshotPromise;
+    const initialRestore = await fetch(`${server.url}/api/rooms/stale-recovery/restore`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-room-token': initial.assetToken! },
+      body: JSON.stringify({ capability: initial.hostCapability, document: initial.document }),
+    });
+    expect(initialRestore.status).toBe(200);
+    const shape = { id: 'newer-shape', type: 'shape' as const, order: 1, version: 1, translation: { x: 20, y: 20 }, shape: 'rectangle' as const, width: 40, height: 40, strokeColor: '#000000', strokeWidth: 2, fill: null };
+    expect(await command(host as Client, { type: 'object:create', object: shape })).toEqual({ ok: true });
+    host.disconnect();
+
+    const recovered = io(server.url, { transports: ['websocket'], reconnection: false });
+    clients.push(recovered as Client);
+    await new Promise<void>((resolve, reject) => { recovered.once('connect', resolve); recovered.once('connect_error', reject); });
+    const currentSnapshotPromise = snapshotNext(recovered as Client);
+    await new Promise<Result>(resolve => recovered.emit('room:join', { roomId: 'stale-recovery', name: 'Host again', host: true, hostCapability: initial.hostCapability }, resolve));
+    const current = await currentSnapshotPromise;
+    expect(current.document?.objects.map(object => object.id)).toEqual(['newer-shape']);
+    const response = await fetch(`${server.url}/api/rooms/stale-recovery/restore`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-room-token': current.assetToken! },
+      body: JSON.stringify({ capability: initial.hostCapability, document: initial.document, sourceEpoch: initial.epoch, sourceRevision: initial.revision }),
+    });
+    expect(response.status).toBe(409);
+    expect((await resync(recovered as Client)).document?.objects.map(object => object.id)).toEqual(['newer-shape']);
+  });
+
+  it('restores an oversized host document over authenticated HTTP without disconnecting', async () => {
+    const server = await start();
+    const host: Client = io(server.url, { transports: ['websocket'], reconnection: false });
+    clients.push(host);
+    await new Promise<void>((resolve, reject) => { host.once('connect', resolve); host.once('connect_error', reject); });
+    const snapshotPromise = snapshotNext(host);
+    const joined = await new Promise<Result>(resolve => host.emit('room:join', { roomId: 'large-restore', name: 'Host', host: true }, resolve));
+    expect(joined).toEqual({ ok: true });
+    const snapshot = await snapshotPromise;
+    const document = {
+      ...snapshot.document!,
+      objects: Array.from({ length: 128 }, (_, index) => ({
+        id: `restore-shape-${index}`, type: 'shape' as const, order: index + 1, version: 1,
+        translation: { x: (index % 20) * 60, y: Math.floor(index / 20) * 60 }, shape: 'rectangle' as const,
+        width: 40, height: 40, strokeColor: '#000000', strokeWidth: 2, fill: null,
+      })),
+    };
+    expect(JSON.stringify({ capability: snapshot.hostCapability, document }).length).toBeGreaterThan(16 * 1024);
+    const response = await fetch(`${server.url}/api/rooms/large-restore/restore`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-room-token': snapshot.assetToken! },
+      body: JSON.stringify({ capability: snapshot.hostCapability, document }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(host.connected).toBe(true);
   });
 
   it('stores image assets behind participant tokens and exposes only validated metadata', async () => {
@@ -448,9 +514,13 @@ describe('authoritative websocket collaboration', () => {
     expect((await recoveredSnapshotPromise).roomStatus).toBe('paused');
     expect(await command(guest as Client, begin('paused-after-reconnect'))).toMatchObject({ ok: false, error: expect.stringContaining('paused') });
     const restoredSnapshotPromise = snapshotNext(recovered as Client);
-    const restored = await new Promise<Result>(resolve => recovered.emit('room:host-restore', { capability: hostSnapshot.hostCapability, document: hostSnapshot.document }, resolve));
-    expect(restored).toEqual({ ok: true });
-    expect((await restoredSnapshotPromise).roomStatus).toBe('active');
+    const restoredResponse = await fetch(`${server.url}/api/rooms/managed/restore`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-room-token': (await recoveredSnapshotPromise).assetToken! },
+      body: JSON.stringify({ capability: hostSnapshot.hostCapability, document: hostSnapshot.document }),
+    });
+    expect(restoredResponse.status).toBe(200);
+    expect(await restoredResponse.json()).toEqual({ ok: true });
     const ended = new Promise<{ status: string }>(resolve => guest.on('room:status', status => { if (status.status === 'ended') resolve(status); }));
     expect(await new Promise<Result>(resolve => recovered.emit('room:end', { capability: hostSnapshot.hostCapability }, resolve))).toEqual({ ok: true });
     expect((await ended).status).toBe('ended');

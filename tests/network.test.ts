@@ -91,3 +91,18 @@ it('stops on a protocol-mismatched snapshot instead of enabling edits', async ()
   await expect.poll(() => callbacks.error).toHaveBeenCalledWith(expect.stringMatching(/incompatible|update/i));
   expect(state.ready).toBe(false);
 });
+
+it('loads an arriving asset without resynchronizing or disabling the document', async () => {
+  const { server } = await setup();
+  const state = new DrawingState();
+  const callbacks = { status: vi.fn(), snapshot: vi.fn(), drawing: vi.fn(), users: vi.fn(), cursor: vi.fn(), error: vi.fn(), asset: vi.fn() };
+  const connection = new Connection(state, 'asset-arrival', 'Tester', callbacks as any);
+  connections.push(connection);
+  await expect.poll(() => state.ready).toBe(true);
+  const snapshot = callbacks.snapshot.mock.calls[0]?.[0] as Snapshot;
+  const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1]);
+  const response = await fetch(`${server.url}/api/rooms/asset-arrival/assets`, { method: 'POST', headers: { 'content-type': 'image/png', 'x-room-token': snapshot.assetToken!, 'x-asset-id': 'arriving-pixel' }, body: png });
+  expect(response.status).toBe(201);
+  await expect.poll(() => callbacks.asset.mock.calls.length, { timeout: 500 }).toBe(1);
+  expect(state.ready).toBe(true);
+});

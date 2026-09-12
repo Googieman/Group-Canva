@@ -50,6 +50,7 @@ export interface ServerEvents {
   'drawing:event': (event: DrawingEvent) => void;
   'presence:update': (users: User[]) => void;
   'cursor:update': (cursor: Cursor) => void;
+  'asset:update': (asset: AssetMeta) => void;
   'server:error': (message: string) => void;
   'room:status': (status: { status: 'active' | 'paused' | 'ended'; message?: string }) => void;
   'room:host-save': (watermark: { epoch: string; revision: number } | null) => void;
@@ -61,7 +62,6 @@ export interface ClientEvents {
   command: (command: Command, ack: (result: Result) => void) => void;
   'cursor:update': (point: Point | null) => void;
   'latency:ping': (ack: () => void) => void;
-  'room:host-restore': (payload: { capability: string; document: CanvasDocument }, ack: (result: Result) => void) => void;
   'room:host-saved': (payload: { capability: string; epoch: string; revision: number }) => void;
   'room:end': (payload: { capability: string }, ack: (result: Result) => void) => void;
 }

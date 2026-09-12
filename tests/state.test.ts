@@ -109,7 +109,7 @@ describe('authoritative client state', () => {
     expect(state.receive(begin())).toBe('applied');
     expect(state.strokes).toHaveLength(1);
     expect(state.strokes[0]?.completed).toBe(false);
-    expect(state.document?.objects).toEqual([]);
+    expect(state.document?.objects).toEqual(committed.objects);
     expect(state.documentHistory?.undo).toEqual([]);
     expect(state.canUndo).toBe(false);
   });

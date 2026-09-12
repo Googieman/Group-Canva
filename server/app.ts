@@ -103,6 +103,7 @@ export async function createAppServer(options: ServerOptions = {}) {
   const rooms = new Map<string, Room>();
   const endedManagedRooms = new Set<string>();
   const assetTokens = new Map<string, { roomId: string; socketId: string }>();
+  let notifyAsset: (room: Room, asset: AssetMeta) => void = () => {};
   const outbound = new Map<string, { packets: number; bytes: number }>();
   let totalPoints = 0;
   let totalAssetBytes = 0;
@@ -247,7 +248,7 @@ export async function createAppServer(options: ServerOptions = {}) {
     if (body.length < 1 || body.length > limits.assetPerImageBytes || totalAssetBytes + body.length > limits.totalAssetBytes || [...access.room.assets.values()].reduce((sum, asset) => sum + asset.bytes.length, 0) + body.length > limits.assetsPerRoomBytes) return response.status(413).json({ error: 'Asset storage limit exceeded.' });
     if (access.room.assets.has(assetId)) return response.status(409).json({ error: 'Asset ID was already used.' });
     const dimensions = mediaDimensions(body, mimeType); if (!dimensions || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > 4096 || dimensions.height > 4096 || dimensions.width * dimensions.height > 16 * 1024 * 1024) return response.status(400).json({ error: 'Image signature or dimensions are invalid.' });
-    const meta: AssetMeta = { id: assetId, mimeType: mimeType as AssetMeta['mimeType'], width: dimensions.width, height: dimensions.height, byteLength: body.length }; access.room.assets.set(assetId, { meta, bytes: body }); totalAssetBytes += body.length; schedulePersistence(); return response.status(201).json(meta);
+    const meta: AssetMeta = { id: assetId, mimeType: mimeType as AssetMeta['mimeType'], width: dimensions.width, height: dimensions.height, byteLength: body.length }; access.room.assets.set(assetId, { meta, bytes: body }); totalAssetBytes += body.length; notifyAsset(access.room, meta); schedulePersistence(); return response.status(201).json(meta);
   });
   app.get('/api/rooms/:roomId/assets/:assetId', (request, response) => { const access = tokenFor(request, request.params.roomId); if (!access) return response.status(401).json({ error: 'A valid room participant token is required.' }); const asset = access.room.assets.get(request.params.assetId); if (!asset) return response.status(404).json({ error: 'Asset unavailable.' }); response.type(asset.meta.mimeType).send(asset.bytes); });
   app.use(express.static(options.staticDir ?? resolve(process.cwd(), 'dist/client'), { maxAge: 0 }));
@@ -256,6 +257,14 @@ export async function createAppServer(options: ServerOptions = {}) {
     transports: ['websocket'], maxHttpBufferSize: 16 * 1024, perMessageDeflate: false,
     allowRequest: (request, callback) => callback(null, !closing && io.engine.clientsCount < limits.connections && originAllowed(request, allowedOrigins)),
     pingInterval: 15000, pingTimeout: 10000,
+  });
+  notifyAsset = (room, asset) => { io.to(`canvas:${room.id}`).emit('asset:update', structuredClone(asset)); };
+  app.post('/api/rooms/:roomId/restore', express.json({ limit: '32mb', strict: true }), (request, response) => {
+    const access = tokenFor(request, request.params.roomId);
+    const payload = request.body as Record<string, unknown>;
+    if (!access || !access.room.managed || access.room.hostSocketId !== access.socketId || !record(payload) || payload.capability !== access.room.hostCapability) return response.status(401).json(fail('Only the current host can restore this session.'));
+    const result = restoreHostDocument(access.room, payload.document, payload.sourceEpoch, payload.sourceRevision);
+    return response.status(result.ok ? 200 : 409).json(result);
   });
   function snapshot(room: Room, selfId: string): Snapshot {
     const assetToken = [...assetTokens.entries()].find(([, owner]) => owner.roomId === room.id && owner.socketId === selfId)?.[0];
@@ -280,6 +289,7 @@ export async function createAppServer(options: ServerOptions = {}) {
     schedulePersistence();
   }
   function syncLegacyDocument(room: Room): void {
+    if (room.documentMode) return;
     const legacy = legacyStrokesToDocument([...room.strokes.values()].filter(stroke => stroke.completed && stroke.active && !room.hiddenInkIds.has(stroke.id)), room.document.id, room.document.title);
     const nonInk = room.document.objects.filter(object => object.type !== 'ink');
     const priorInk = new Map(room.document.objects.filter((object): object is Extract<CanvasObject, { type: 'ink' }> => object.type === 'ink').map(object => [object.id, object]));
@@ -354,6 +364,37 @@ export async function createAppServer(options: ServerOptions = {}) {
     armHostSaveDeadline(room);
     protectSlowPeers(room);
     schedulePersistence();
+  }
+  function restoreHostDocument(room: Room, input: unknown, sourceEpoch?: unknown, sourceRevision?: unknown): Result {
+    const validation = validateDocument(input);
+    if (!validation.ok) return fail(validation.error ?? 'The host document is invalid.');
+    if (sourceEpoch !== undefined && sourceEpoch !== null && typeof sourceEpoch !== 'string') return fail('The host recovery epoch is invalid.');
+    if (sourceRevision !== undefined && (!Number.isSafeInteger(sourceRevision) || (sourceRevision as number) < 0)) return fail('The host recovery revision is invalid.');
+    const document = structuredClone(input) as CanvasDocument;
+    if (document.assetIds.some(assetId => !room.assets.has(assetId))) return fail('The host document references an asset that was not uploaded.');
+    let strokes: Stroke[];
+    try { strokes = documentToLegacyStrokes(document); } catch (error) { return fail(error instanceof Error ? error.message : 'The host document is invalid.'); }
+    const points = strokes.reduce((total, stroke) => total + stroke.points.length, 0);
+    if (points > limits.pointsPerRoom || totalPoints - room.points + points > limits.totalPoints) return fail('The host document exceeds the room point limit.');
+    if (sourceEpoch === room.epoch && typeof sourceRevision === 'number' && sourceRevision < room.revision && JSON.stringify(document) !== JSON.stringify(room.document)) return fail('The shared canvas is newer than this saved recovery. Refresh and retry.');
+    const changed = JSON.stringify(document) !== JSON.stringify(room.document);
+    if (changed) {
+      totalPoints += points - room.points;
+      room.points = points;
+      room.strokes = new Map(strokes.map(stroke => [stroke.id, stroke]));
+      room.usedIds = new Set(strokes.map(stroke => stroke.id));
+      room.hiddenInkIds.clear(); room.unfinished.clear(); room.redoIds = [];
+      room.nextOrder = Math.max(0, ...document.objects.map(object => object.order));
+      room.nextCompletion = Math.max(0, ...strokes.map(stroke => stroke.completionOrder ?? 0));
+      room.document = document; room.documentHistory = createHistory(); room.documentMode = true;
+      room.revision++;
+    }
+    room.status = 'active'; room.hostWatermark = { epoch: room.epoch, revision: room.revision };
+    schedulePersistence();
+    announceStatus(room, 'The host restored the saved canvas. Editing is active.');
+    for (const participant of room.users.keys()) io.sockets.sockets.get(participant)?.emit('room:snapshot', snapshot(room, participant));
+    io.to(`canvas:${room.id}`).emit('room:host-save', room.hostWatermark);
+    return ok;
   }
   function currentLeases(room: Room): Array<{ objectId: string; userId: string }> {
     const now = Date.now();
@@ -521,10 +562,22 @@ export async function createAppServer(options: ServerOptions = {}) {
       room.unfinished.delete(userId);
       for (const id of room.redoIds) discard(room, id);
       room.redoIds = [];
-      syncLegacyDocument(room);
-      const transaction = room.documentMode ? transactionForStroke(room, stroke) : undefined;
-      if (transaction) { room.documentHistory = { undo: [...room.documentHistory.undo, transaction], redo: [] }; publishDocument(room, { document: room.document, history: room.documentHistory, transaction }); }
-      else publish(room, { type: 'stroke:end', id: strokeCommand.id, completionOrder: stroke.completionOrder });
+      if (room.documentMode) {
+        const object = legacyStrokesToDocument([stroke], room.document.id, room.document.title).objects[0];
+        if (!object || object.type !== 'ink') return fail('Completed stroke could not be committed.');
+        try {
+          const result = applyDocumentCommand(room.document, room.documentHistory, { type: 'object:create', object }, userId);
+          room.document = result.document; room.documentHistory = result.history;
+          if (result.transaction) syncStrokesAfterDocumentHistory(room, result.transaction, 'after');
+          publishDocument(room, result);
+        } catch (error) {
+          stroke.completed = false; stroke.completionOrder = null; room.unfinished.set(userId, stroke.id);
+          return fail(error instanceof Error ? error.message : 'Completed stroke could not be committed.');
+        }
+      } else {
+        syncLegacyDocument(room);
+        publish(room, { type: 'stroke:end', id: strokeCommand.id, completionOrder: stroke.completionOrder });
+      }
       return remember(ok);
     }
     if (stroke.completed) return fail('Completed strokes cannot be cancelled.');
@@ -613,26 +666,6 @@ export async function createAppServer(options: ServerOptions = {}) {
       else if (!result.ok) socket.emit('server:error', result.error);
     });
     socket.on('room:resync', () => { if (token()) sendSnapshot(); });
-    socket.on('room:host-restore', (payload, ack) => {
-      const reply = (result: Result) => { if (typeof ack === 'function') ack(result); };
-      if (!room || !room.managed || room.hostSocketId !== socket.id || !record(payload) || payload.capability !== room.hostCapability || !record(payload.document)) { reply(fail('Only the current host can restore this session.')); return; }
-      const validation = validateDocument(payload.document);
-      if (!validation.ok) { reply(fail(validation.error ?? 'The host document is invalid.')); return; }
-      const document = structuredClone(payload.document) as CanvasDocument;
-      if (document.assetIds.some(assetId => !room!.assets.has(assetId))) { reply(fail('The host document references an asset that was not uploaded.')); return; }
-      let strokes: Stroke[];
-      try { strokes = documentToLegacyStrokes(document); } catch (error) { reply(fail(error instanceof Error ? error.message : 'The host document is invalid.')); return; }
-      const points = strokes.reduce((total, stroke) => total + stroke.points.length, 0);
-      if (points > limits.pointsPerRoom || totalPoints - room.points + points > limits.totalPoints) { reply(fail('The host document exceeds the room point limit.')); return; }
-      totalPoints += points - room.points;
-      room.points = points; room.strokes = new Map(strokes.map(stroke => [stroke.id, stroke])); room.usedIds = new Set(strokes.map(stroke => stroke.id)); room.hiddenInkIds.clear(); room.unfinished.clear(); room.redoIds = [];
-      room.nextOrder = Math.max(0, ...document.objects.map(object => object.order)); room.nextCompletion = Math.max(0, ...strokes.map(stroke => stroke.completionOrder ?? 0)); room.document = document; room.documentHistory = createHistory(); room.documentMode = true; room.revision++; room.status = 'active'; room.hostWatermark = { epoch: room.epoch, revision: room.revision };
-      schedulePersistence();
-      announceStatus(room, 'The host restored the saved canvas. Editing is active.');
-      for (const participant of room.users.keys()) io.sockets.sockets.get(participant)?.emit('room:snapshot', snapshot(room, participant));
-      io.to(`canvas:${room.id}`).emit('room:host-save', room.hostWatermark);
-      reply(ok);
-    });
     socket.on('room:host-saved', payload => {
       if (!room || !room.managed || room.hostSocketId !== socket.id || !record(payload) || payload.capability !== room.hostCapability || payload.epoch !== room.epoch || !Number.isSafeInteger(payload.revision) || payload.revision < 0 || payload.revision > room.revision) { socket.emit('server:error', 'The host save watermark was rejected.'); return; }
       room.hostWatermark = { epoch: payload.epoch, revision: payload.revision }; if (room.status === 'paused' && room.hostSocketId === socket.id) { room.status = 'active'; announceStatus(room, 'Host saving has recovered. Editing is active again.'); } armHostSaveDeadline(room);
