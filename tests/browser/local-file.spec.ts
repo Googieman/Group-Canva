@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Browser, type Page } from '@playwright/test';
 
 async function createLocalFile(page: Page): Promise<{ baseUrl: string; fileId: string }> {
   await page.goto('/');
@@ -6,6 +6,22 @@ async function createLocalFile(page: Page): Promise<{ baseUrl: string; fileId: s
   await expect(page).toHaveURL(/\?file=/);
   const url = new URL(page.url());
   return { baseUrl: url.origin, fileId: url.searchParams.get('file')! };
+}
+
+async function createClipboardContext(browser: Browser) {
+  const context = await browser.newContext(browser.browserType().name() === 'chromium' ? { permissions: ['clipboard-read', 'clipboard-write'] } : undefined);
+  if (browser.browserType().name() === 'chromium') return context;
+  await context.addInitScript(() => {
+    let value = '';
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        readText: async () => value,
+        writeText: async (next: string) => { value = next; },
+      },
+    });
+  });
+  return context;
 }
 
 async function countPurplePixels(page: Page, region: { left: number; top: number; right: number; bottom: number }): Promise<number> {
@@ -35,6 +51,31 @@ test('local-file startup is editable and saved on this device', async ({ page })
   await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible();
   await expect(page.getByText('Connecting…', { exact: true })).not.toBeVisible();
   await expect(page.locator('canvas')).toHaveAttribute('aria-disabled', 'false');
+});
+
+test('copying a local canvas invite hosts it for a fresh browser', async ({ browser }) => {
+  const hostContext = await createClipboardContext(browser);
+  const host = await hostContext.newPage();
+  await host.goto('/');
+  await host.getByRole('button', { name: 'New canvas' }).click();
+  await expect(host).toHaveURL(/\?file=/);
+
+  await host.getByRole('button', { name: 'Copy invite link', exact: true }).click();
+  const inviteLink = await host.evaluate(() => navigator.clipboard.readText());
+  const invite = new URL(inviteLink);
+  expect(invite.searchParams.get('room')).toMatch(/^room-/);
+  expect(invite.searchParams.has('file')).toBe(false);
+
+  await expect(host.getByText('Live together', { exact: true })).toBeVisible();
+  const guestContext = await browser.newContext();
+  const guest = await guestContext.newPage();
+  await guest.goto(inviteLink);
+  await expect(guest.getByText('Live together', { exact: true })).toBeVisible();
+  await expect(guest.getByText('Saved by host', { exact: true })).toBeVisible();
+  await expect(guest).not.toHaveURL(/^[^?]+\/$/);
+
+  await guestContext.close();
+  await hostContext.close();
 });
 
 test('drawing after a shape keeps visual order valid and uses wheel sizing', async ({ page }) => {
