@@ -6,6 +6,7 @@ import {
   createDocument,
   documentToLegacyStrokes,
   legacyStrokesToDocument,
+  nextObjectOrder,
   type CanvasDocument,
   type CanvasObject,
   type DocumentHistory,
@@ -21,6 +22,17 @@ const ink: Stroke = {
 function history(): DocumentHistory { return { undo: [], redo: [] }; }
 
 describe('versioned document foundation', () => {
+  it('allocates the next visual order after every document object', () => {
+    const document: CanvasDocument = {
+      ...createDocument('doc-1'),
+      objects: [
+        { id: 'shape-1', type: 'shape', order: 4, version: 1, translation: { x: 0, y: 0 }, shape: 'rectangle', width: 20, height: 20, strokeColor: '#000000', strokeWidth: 2, fill: null },
+        { ...legacyStrokesToDocument([ink], 'doc-2').objects[0]!, id: 'ink-1', order: 7 },
+      ],
+    };
+    expect(nextObjectOrder(document)).toBe(8);
+  });
+
   it('round-trips legacy strokes without changing their observable fields', () => {
     const document = legacyStrokesToDocument([ink], 'doc-1', 'Sketch');
     expect(document.schemaVersion).toBe(1);

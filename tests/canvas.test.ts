@@ -65,7 +65,7 @@ function setup() {
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.set(++frameId, cb); return frameId; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
   const canvas = new TestCanvas();
-  const callbacks = { onBegin: vi.fn(), onPoints: vi.fn(), onEnd: vi.fn(), onCancel: vi.fn(), onCursor: vi.fn() };
+  const callbacks = { onBegin: vi.fn(), onPoints: vi.fn(), onEnd: vi.fn(), onCancel: vi.fn(), onCursor: vi.fn(), onWidthChange: vi.fn() };
   const board = new CanvasBoard(canvas as unknown as HTMLCanvasElement, callbacks);
   const flush = () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(cb => cb(0)); };
   return { board, canvas, callbacks, flush, canvases, frames };
@@ -182,6 +182,19 @@ describe('CanvasBoard input and rendering', () => {
     board.setEnabled(true); board.setCamera({ x: 800, y: 450, zoom: 2 });
     canvas.fire('pointerdown', { clientX: 400, clientY: 225 });
     expect(callbacks.onBegin).toHaveBeenCalledWith({ x: 800, y: 450 });
+    board.destroy();
+  });
+  it('adjusts brush and eraser width with the wheel while leaving camera zoom unchanged', () => {
+    const { board, canvas, callbacks } = setup();
+    board.setEnabled(true);
+    board.setTool('brush', '#123456', 6);
+    canvas.fire('wheel', { deltaY: -100 });
+    expect(callbacks.onWidthChange).toHaveBeenLastCalledWith(7);
+    expect(board.getCamera().zoom).toBe(1);
+    board.setTool('eraser', '#123456', 7);
+    canvas.fire('wheel', { deltaY: 100 });
+    expect(callbacks.onWidthChange).toHaveBeenLastCalledWith(6);
+    expect(board.getCamera().zoom).toBe(1);
     board.destroy();
   });
   it('renders committed ink objects with their document translation', () => {

@@ -143,6 +143,10 @@ export function createDocument(id: string, title = 'Untitled canvas'): CanvasDoc
 
 export function createHistory(): DocumentHistory { return { undo: [], redo: [] }; }
 
+export function nextObjectOrder(document: CanvasDocument): number {
+  return Math.max(0, ...document.objects.map(object => object.order)) + 1;
+}
+
 export function objectBounds(object: CanvasObject): { left: number; top: number; right: number; bottom: number } | null {
   const x = object.translation.x;
   const y = object.translation.y;

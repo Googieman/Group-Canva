@@ -528,7 +528,7 @@ export class CanvasBoard {
   private readonly onWheel = (event: WheelEvent): void => {
     if (!this.enabled) return;
     event.preventDefault();
-    if (this.tool === 'eraser' && !event.ctrlKey && !event.metaKey) {
+    if ((this.tool === 'brush' || this.tool === 'eraser') && !event.ctrlKey && !event.metaKey) {
       const next = Math.max(1, Math.min(64, this.width + (event.deltaY < 0 ? 1 : -1)));
       if (next !== this.width) { this.width = next; this.callbacks.onWidthChange?.(next); this.updateCursor(); }
       return;

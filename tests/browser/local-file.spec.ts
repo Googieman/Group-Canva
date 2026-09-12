@@ -16,6 +16,31 @@ test('local-file startup is editable and saved on this device', async ({ page })
   await expect(page.locator('canvas')).toHaveAttribute('aria-disabled', 'false');
 });
 
+test('drawing after a shape keeps visual order valid and uses wheel sizing', async ({ page }) => {
+  const { baseUrl, fileId } = await createLocalFile(page);
+  await page.goto(`${baseUrl}/?file=${encodeURIComponent(fileId)}`);
+  await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible();
+  await expect(page.locator('.width-button')).toHaveCount(0);
+
+  const canvas = page.locator('canvas');
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error('Canvas bounds were unavailable.');
+  await page.getByRole('button', { name: 'Rectangle', exact: true }).click();
+  await page.mouse.move(box.x + 120, box.y + 100);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 260, box.y + 190);
+  await page.mouse.up();
+  await page.getByRole('button', { name: 'Brush (B)', exact: true }).click();
+  await page.mouse.move(box.x + 360, box.y + 220);
+  await page.mouse.wheel(0, -100);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 430, box.y + 250);
+  await page.mouse.up();
+
+  await expect(page.locator('.toast')).toBeHidden();
+  await expect(page.locator('.save-state')).not.toHaveText(/Document objects must retain visual order/);
+});
+
 test('a second local-file tab is read-only without disconnecting the writer', async ({ browser }) => {
   const context = await browser.newContext();
   const writer = await context.newPage();
