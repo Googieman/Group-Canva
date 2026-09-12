@@ -39,7 +39,7 @@ class TestCanvas extends EventTarget {
     globalCompositeOperation: 'source-over', fillStyle: '', strokeStyle: '', lineWidth: 0,
     lineCap: '', lineJoin: '',
     setTransform: vi.fn(), clearRect: (...rect:number[]) => { this.clears.push(rect); this.ops.push({ type: 'clear' }); },
-    save() {}, restore() {}, rect() {}, clip() {},
+    save() {}, restore() {}, rect: () => this.ops.push({ type: 'rect' }), clip() {},
     drawImage: () => this.ops.push({ type: 'image' }), beginPath() {},
     moveTo() {}, lineTo() {},
     arc: (x: number) => this.ops.push({ type: 'dot', x, mode: this.ctx.globalCompositeOperation }),
@@ -185,6 +185,14 @@ describe('CanvasBoard input and rendering', () => {
     expect(callbacks.onBegin).toHaveBeenCalledWith({ x: 800, y: 450 });
     board.destroy();
   });
+  it('maps movement samples through the same zoomed camera as pointer down', () => {
+    const { board, canvas, callbacks } = setup();
+    board.setEnabled(true); board.setCamera({ x: 800, y: 450, zoom: 2 });
+    canvas.fire('pointerdown', { clientX: 400, clientY: 225 });
+    canvas.fire('pointermove', { clientX: 420, clientY: 225 });
+    expect(callbacks.onPoints).toHaveBeenCalledWith([{ x: 820, y: 450 }]);
+    board.destroy();
+  });
   it('adjusts brush and eraser width with the wheel while leaving camera zoom unchanged', () => {
     const { board, canvas, callbacks } = setup();
     board.setEnabled(true);
@@ -207,6 +215,27 @@ describe('CanvasBoard input and rendering', () => {
     }]);
     flush();
     expect((canvas.ops.concat(...canvases.map(value => value.ops))).some(operation => operation.type === 'dot' && operation.x === 100)).toBe(true);
+    board.destroy();
+  });
+  it('does not rebuild or repaint when objects and assets are unchanged', () => {
+    const { board, canvases, flush, frames } = setup();
+    board.setObjects([]); board.setAssets(new Map()); flush();
+    canvases.forEach(value => { value.ops.length = 0; value.clears.length = 0; });
+    const assets = new Map<string, CanvasImageSource>();
+    board.setObjects([]); board.setAssets(assets);
+    expect(frames.size).toBe(0);
+    flush();
+    expect(canvases.flatMap(value => value.clears)).toEqual([]);
+    board.destroy();
+  });
+  it('renders mixed document objects in authoritative order', () => {
+    const { board, canvas, flush } = setup();
+    board.setObjects([
+      { id: 'shape-first', type: 'shape', order: 1, version: 1, translation: { x: 10, y: 10 }, shape: 'rectangle', width: 40, height: 40, strokeColor: '#000000', strokeWidth: 2, fill: null },
+      { id: 'ink-second', type: 'ink', order: 2, version: 1, translation: { x: 100, y: 80 }, userId: 'u', tool: 'brush', color: '#000000', width: 4, points: [{ x: 0, y: 0 }], completed: true, completionOrder: 1, active: true },
+    ]);
+    flush();
+    expect(canvas.ops.filter(operation => operation.type === 'stroke' || operation.type === 'image').map(operation => operation.type)).toEqual(['stroke', 'image']);
     board.destroy();
   });
   it('cancels an active touch drawing gesture before two-finger navigation', () => {

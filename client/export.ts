@@ -1,6 +1,7 @@
 import { objectBounds, type CanvasDocument, type InkObject } from '../shared/document';
 import { renderDocumentObject, renderInkStroke } from './canvas';
 import type { Bounds } from './viewport';
+import type { Stroke } from '../shared/protocol';
 
 export const MAX_PNG_SIDE = 4096;
 export const MAX_PNG_PIXELS = 16 * 1024 * 1024;
@@ -36,14 +37,14 @@ export function contentBounds(document: CanvasDocument): Bounds | null {
   return bounds;
 }
 
-function asStroke(object: InkObject) {
+export function inkObjectToStroke(object: InkObject): Stroke {
   return {
     id: object.id,
     userId: object.userId,
     tool: object.tool,
     color: object.color,
     width: object.width,
-    points: object.points,
+    points: object.points.map(point => ({ x: point.x + object.translation.x, y: point.y + object.translation.y })),
     order: object.order,
     completed: object.completed,
     completionOrder: object.completionOrder,
@@ -76,15 +77,30 @@ export async function exportDocumentPng(documentValue: CanvasDocument, assets: R
   if (!inkContext) throw new Error('PNG export is unavailable.');
   inkContext.setTransform(scaleX, 0, 0, scaleY, -left * scaleX, -top * scaleY);
   const orderedObjects = [...documentValue.objects].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
-  for (const object of orderedObjects) {
-    if (object.type === 'ink' && object.active) renderInkStroke(inkContext, asStroke(object));
-  }
-
-  context.globalCompositeOperation = 'source-over';
-  context.drawImage(inkSurface, 0, 0);
+  let inkPending = false;
   context.setTransform(scaleX, 0, 0, scaleY, -left * scaleX, -top * scaleY);
   for (const object of orderedObjects) {
-    if (object.type !== 'ink') renderDocumentObject(context, object, assets, true);
+    if (object.type === 'ink') {
+      if (object.active) { renderInkStroke(inkContext, inkObjectToStroke(object)); inkPending = true; }
+      continue;
+    }
+    if (inkPending) {
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.globalCompositeOperation = 'source-over';
+      context.drawImage(inkSurface, 0, 0);
+      inkContext.setTransform(1, 0, 0, 1, 0, 0);
+      inkContext.clearRect(0, 0, inkSurface.width, inkSurface.height);
+      inkContext.setTransform(scaleX, 0, 0, scaleY, -left * scaleX, -top * scaleY);
+      inkPending = false;
+    }
+    inkContext.setTransform(scaleX, 0, 0, scaleY, -left * scaleX, -top * scaleY);
+    context.setTransform(scaleX, 0, 0, scaleY, -left * scaleX, -top * scaleY);
+    renderDocumentObject(context, object, assets, true);
+  }
+  if (inkPending) {
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.globalCompositeOperation = 'source-over';
+    context.drawImage(inkSurface, 0, 0);
   }
   context.setTransform(1, 0, 0, 1, 0, 0);
   return new Promise((resolve, reject) => output.toBlob(blob => blob ? resolve(blob) : reject(new Error('PNG export is unavailable.')), 'image/png'));

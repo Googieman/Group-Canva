@@ -71,9 +71,18 @@ export function renderInkStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, c
 }
 
 function sameInk(a: Stroke, b: Stroke): boolean {
-  return a.id === b.id && a.order === b.order && a.tool === b.tool && a.color === b.color
-    && a.width === b.width && a.points.length === b.points.length
+  return a.id === b.id && a.userId === b.userId && a.order === b.order && a.tool === b.tool && a.color === b.color
+    && a.width === b.width && a.completed === b.completed && a.completionOrder === b.completionOrder && a.active === b.active
+    && a.points.length === b.points.length
     && a.points.every((point, i) => point.x === b.points[i].x && point.y === b.points[i].y);
+}
+
+function sameObject(a: CanvasObject, b: CanvasObject): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
+function copyStroke(stroke: Stroke): Stroke {
+  return { ...stroke, points: stroke.points.map(point => ({ ...point })) };
 }
 
 interface InkBounds { left: number; top: number; right: number; bottom: number; }
@@ -269,22 +278,42 @@ export class CanvasBoard {
 
   setStrokes(strokes: Stroke[]): void {
     if (this.destroyed) return;
-    this.legacyStrokes = strokes;
+    const next = orderedVisibleStrokes(strokes.slice());
+    if (this.legacyStrokes.length === next.length && this.legacyStrokes.every((stroke, index) => sameInk(stroke, next[index]!))) return;
+    this.legacyStrokes = next.map(copyStroke);
     this.rebuildInkStrokes();
     this.invalidate();
   }
 
   setObjects(objects: CanvasObject[]): void {
     if (this.destroyed) return;
-    this.objects = objects.slice().sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
-    this.objectIndex.clear();
-    for (const object of this.objects) { const bounds = objectBounds(object); if (bounds) this.objectIndex.insert(object.id, bounds); }
+    const next = objects.slice().sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+    if (this.objects.length === next.length && this.objects.every((object, index) => sameObject(object, next[index]!))) return;
+    const previousById = new Map(this.objects.map(object => [object.id, object]));
+    const nextById = new Map(next.map(object => [object.id, object]));
+    for (const previous of this.objects) {
+      const current = nextById.get(previous.id);
+      if (!current) {
+        this.objectIndex.remove(previous.id);
+      } else if (!sameObject(previous, current)) {
+        this.objectIndex.remove(previous.id);
+        const bounds = objectBounds(current);
+        if (bounds) this.objectIndex.insert(current.id, bounds);
+      }
+    }
+    for (const object of next) {
+      if (previousById.has(object.id)) continue;
+      const bounds = objectBounds(object);
+      if (bounds) this.objectIndex.insert(object.id, bounds);
+    }
+    this.objects = next;
     this.rebuildInkStrokes();
     this.fullRepaint = true;
     this.invalidate();
   }
 
   setAssets(assets: Map<string, CanvasImageSource>): void {
+    if (this.assets.size === assets.size && [...assets].every(([id, source]) => this.assets.get(id) === source)) return;
     this.assets = new Map(assets);
     this.fullRepaint = true;
     this.invalidate();
@@ -294,12 +323,18 @@ export class CanvasBoard {
 
   setSelection(ids: Iterable<string>, marquee: { start: Point; end: Point } | null = null): void {
     if (this.destroyed) return;
-    this.selectedIds = new Set(ids); this.marquee = marquee ? { start: { ...marquee.start }, end: { ...marquee.end } } : null; this.invalidate();
+    const nextIds = new Set(ids);
+    const sameIds = nextIds.size === this.selectedIds.size && [...nextIds].every(id => this.selectedIds.has(id));
+    const sameMarquee = marquee === this.marquee || (!marquee && !this.marquee) || (!!marquee && !!this.marquee && marquee.start.x === this.marquee.start.x && marquee.start.y === this.marquee.start.y && marquee.end.x === this.marquee.end.x && marquee.end.y === this.marquee.end.y);
+    if (sameIds && sameMarquee) return;
+    this.selectedIds = nextIds; this.marquee = marquee ? { start: { ...marquee.start }, end: { ...marquee.end } } : null; this.invalidate();
   }
 
   setCamera(camera: Camera): void {
     if (this.destroyed) return;
-    this.camera = { x: Math.max(-100_000, Math.min(100_000, camera.x)), y: Math.max(-100_000, Math.min(100_000, camera.y)), zoom: Math.max(0.1, Math.min(4, camera.zoom)) };
+    const next = { x: Math.max(-100_000, Math.min(100_000, camera.x)), y: Math.max(-100_000, Math.min(100_000, camera.y)), zoom: Math.max(0.1, Math.min(4, camera.zoom)) };
+    if (next.x === this.camera.x && next.y === this.camera.y && next.zoom === this.camera.zoom) return;
+    this.camera = next;
     this.fullRepaint = true;
     this.updateCursor();
     this.callbacks.onCameraChange?.(this.camera);
@@ -482,7 +517,7 @@ export class CanvasBoard {
     const rect = this.canvas.getBoundingClientRect();
     const coalesced = event.getCoalescedEvents?.() ?? [];
     // Browser coalesced lists can be empty or omit the dispatched event.
-    const points = [...coalesced, event].map(sample => toLogicalPoint(sample.clientX, sample.clientY, rect))
+    const points = [...coalesced, event].map(sample => this.point(sample))
       .filter((point): point is Point => point !== null);
     const samples = filterSamples(points, this.lastPoint, final);
     if (!samples.length) return;
@@ -577,6 +612,10 @@ export class CanvasBoard {
   private render(): void {
     const started = diagnostics ? performance.now() : 0;
     this.resizeBacking();
+    if (this.objects.some(object => object.type !== 'ink')) {
+      this.renderOrderedFrame();
+      return;
+    }
     if (this.camera.zoom !== 1 || this.camera.x !== BOARD_WIDTH / 2 || this.camera.y !== BOARD_HEIGHT / 2) {
       this.renderCameraFrame();
       return;
@@ -707,6 +746,63 @@ export class CanvasBoard {
       if (bounds) this.renderedInk.set(stroke.id, { stroke: { ...stroke, points: stroke.points.map(point => ({ ...point })) }, bounds });
     }
     diagnostics?.record('renderMs', performance.now()-started);
+    diagnostics?.painted();
+  }
+
+  private renderOrderedFrame(): void {
+    const started = diagnostics ? performance.now() : 0;
+    const cameraActive = this.camera.zoom !== 1 || this.camera.x !== BOARD_WIDTH / 2 || this.camera.y !== BOARD_HEIGHT / 2;
+    const view: InkBounds = {
+      left: this.camera.x - this.viewport.width / (2 * this.camera.zoom),
+      top: this.camera.y - this.viewport.height / (2 * this.camera.zoom),
+      right: this.camera.x + this.viewport.width / (2 * this.camera.zoom),
+      bottom: this.camera.y + this.viewport.height / (2 * this.camera.zoom),
+    };
+    const visible = (bounds: InkBounds | null): boolean => !cameraActive || !!bounds && intersects(bounds, view);
+    const worldTransform = (context: CanvasRenderingContext2D): void => {
+      if (cameraActive) setWorldTransform(context, this.dpr, this.camera, this.viewport);
+      else setDefaultWorldTransform(context, this.dpr);
+    };
+    this.context.setTransform(1, 0, 0, 1, 0, 0);
+    this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.cacheContext.setTransform(1, 0, 0, 1, 0, 0);
+    this.cacheContext.clearRect(0, 0, this.cache.width, this.cache.height);
+    worldTransform(this.cacheContext);
+    worldTransform(this.context);
+    this.cachedPrefix = [];
+    this.cachedTail = [];
+    const items = ([
+      ...this.objects.filter(object => object.type !== 'ink').map(object => ({ order: object.order, id: object.id, object })),
+      ...this.strokes.map(stroke => ({ order: stroke.order, id: stroke.id, stroke })),
+    ] as Array<{ order: number; id: string; stroke?: Stroke; object?: CanvasObject }>).filter(item => visible(item.stroke ? strokeBounds(item.stroke) : objectBounds(item.object!)))
+      .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+    let inkPending = false;
+    const flushInk = (): void => {
+      if (!inkPending) return;
+      this.context.setTransform(1, 0, 0, 1, 0, 0);
+      this.context.globalCompositeOperation = 'source-over';
+      this.context.drawImage(this.cache, 0, 0);
+      this.cacheContext.setTransform(1, 0, 0, 1, 0, 0);
+      this.cacheContext.clearRect(0, 0, this.cache.width, this.cache.height);
+      worldTransform(this.cacheContext);
+      worldTransform(this.context);
+      inkPending = false;
+    };
+    for (const item of items) {
+      if (item.stroke) {
+        renderInkStroke(this.cacheContext, item.stroke, this.pathFor(item.stroke));
+        inkPending = true;
+      } else {
+        flushInk();
+        drawObject(this.context, item.object!, this.assets, this.fontReady);
+      }
+    }
+    flushInk();
+    worldTransform(this.context);
+    drawSelection(this.context, this.objects, this.selectedIds, this.marquee, cameraActive ? Math.max(1, 1.5 / this.camera.zoom) : 1.5);
+    this.context.setTransform(1, 0, 0, 1, 0, 0);
+    this.fullRepaint = false;
+    diagnostics?.record('renderMs', performance.now() - started);
     diagnostics?.painted();
   }
 
