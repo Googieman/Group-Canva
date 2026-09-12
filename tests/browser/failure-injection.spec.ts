@@ -11,5 +11,5 @@ test('deleting the IndexedDB database leaves a visible save recovery error', asy
     request.onblocked = () => reject(new Error('IndexedDB deletion was blocked by an open editor connection.'));
   }));
   await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.locator('.save-state')).toHaveText(/error|unable|failed/i);
+  await expect(page.locator('.save-state')).toHaveText(/^Save error:/);
 });
