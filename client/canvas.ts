@@ -24,15 +24,16 @@ export function toLogicalPoint(clientX: number, clientY: number,
   };
 }
 
-/** Suppress subpixel jitter; the distinct pointerup endpoint is always retained. */
+/** Suppress subpixel jitter and treat tiny pointerup movement as a click. */
 export function filterSamples(samples: Point[], previous: Point | null, final: boolean): Point[] {
   const accepted: Point[] = [];
   let last = previous;
+  const minimumDistance = final ? 4 : 0.25;
   for (let i = 0; i < samples.length; i++) {
     const point = samples[i];
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
     const distanceSquared = last ? (point.x - last.x) ** 2 + (point.y - last.y) ** 2 : Infinity;
-    if (distanceSquared >= 0.25 ** 2 || (final && i === samples.length - 1 && distanceSquared > 0)) {
+    if (distanceSquared >= minimumDistance ** 2) {
       accepted.push(point);
       last = point;
     }

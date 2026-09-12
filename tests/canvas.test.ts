@@ -16,9 +16,10 @@ describe('canvas geometry', () => {
     expect(toLogicalPoint(-20, 999, { left: 0, top: 0, width: 800, height: 450 })).toEqual({ x: 0, y: 900 });
     expect(toLogicalPoint(1, 1, { left: 0, top: 0, width: 0, height: 0 })).toBeNull();
   });
-  it('drops tiny intermediate moves while preserving a distinct final endpoint', () => {
+  it('drops tiny pointer jitter, including a tiny pointerup endpoint', () => {
     expect(filterSamples([{ x: 0.1, y: 0 }, { x: 4, y: 0 }, { x: 4.1, y: 0 }], { x: 0, y: 0 }, false)).toEqual([{ x: 4, y: 0 }]);
-    expect(filterSamples([{ x: 4.1, y: 0 }], { x: 4, y: 0 }, true)).toEqual([{ x: 4.1, y: 0 }]);
+    expect(filterSamples([{ x: 4.1, y: 0 }], { x: 4, y: 0 }, true)).toEqual([]);
+    expect(filterSamples([{ x: 5, y: 0 }], { x: 0, y: 0 }, true)).toEqual([{ x: 5, y: 0 }]);
   });
   it('uses begin order for overlapping strokes and excludes undone strokes', () => {
     const undone = { ...stroke('undone', 2), active: false };
@@ -91,8 +92,8 @@ describe('CanvasBoard input and rendering', () => {
     board.setEnabled(true); canvas.fire('pointerdown');
     canvas.fire('pointermove', { clientX: 30, getCoalescedEvents: () => [{ clientX: 10.02, clientY: 10 }, { clientX: 20, clientY: 10 }, { clientX: 30, clientY: 10 }] });
     expect(callbacks.onPoints.mock.calls[0][0]).toEqual([{ x: 40, y: 20 }, { x: 60, y: 20 }]);
-    canvas.fire('pointerup', { clientX: 30.02 });
-    expect(callbacks.onPoints.mock.calls[1][0]).toEqual([{ x: 60.04, y: 20 }]);
+    canvas.fire('pointerup', { clientX: 32.5 });
+    expect(callbacks.onPoints.mock.calls[1][0]).toEqual([{ x: 65, y: 20 }]);
     expect(callbacks.onPoints.mock.invocationCallOrder[1]).toBeLessThan(callbacks.onEnd.mock.invocationCallOrder[0]);
     expect(canvas.captures.size).toBe(0);
     board.destroy();
