@@ -10,6 +10,7 @@
     "start": "npm run build && node dist/server/server/index.js",
     "dev": "concurrently -k \"tsx watch server/index.ts\" \"vite --host 127.0.0.1\"",
     "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
+    "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -35,6 +35,14 @@ const COLORS = ['#6857e8', '#e66b3b', '#168d83', '#bc4e93', '#3d7fd0', '#a37919'
 const ok: Result = { ok: true };
 const fail = (error: string): Result => ({ ok: false, error });
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+export function validateRoomJoinRequest(request: unknown): string | null {
+  if (!record(request)) return 'Invalid room request.';
+  const roomId = request.roomId ?? DEFAULT_ROOM;
+  const name = request.name ?? 'Guest';
+  if (request.protocolVersion !== undefined && request.protocolVersion !== PROTOCOL_VERSION) return 'This session requires a newer Group Canvas client.';
+  if (typeof roomId !== 'string' || !ROOM_ID.test(roomId) || typeof name !== 'string' || name.trim().length < 1 || name.length > 32 || /[\u0000-\u001f\u007f]/.test(name) || (request.protocolVersion !== undefined && !Number.isSafeInteger(request.protocolVersion)) || (request.host !== undefined && typeof request.host !== 'boolean') || (request.hostCapability !== undefined && (typeof request.hostCapability !== 'string' || !ID.test(request.hostCapability))) || Object.keys(request).some(key => !['roomId', 'name', 'protocolVersion', 'host', 'hostCapability'].includes(key))) return 'Use a room ID of 1–48 letters, numbers, hyphens or underscores and a name of 1–32 characters.';
+  return null;
+}
 function optionalOperation(value: Record<string, unknown>, allowed: string[]): boolean {
   if (Object.keys(value).some(key => !allowed.includes(key))) return false;
   return !('operationId' in value) || (typeof value.operationId === 'string' && ID.test(value.operationId));
@@ -624,12 +632,12 @@ export async function createAppServer(options: ServerOptions = {}) {
       if (room && rooms.get(room.id) !== room) room = undefined;
       if (!token()) { reply(fail('Too many requests.')); return; }
       if (!record(request)) { reply(fail('Invalid room request.')); return; }
-      const roomId = request.roomId ?? DEFAULT_ROOM;
-      const name = request.name ?? 'Guest';
+      const validationError = validateRoomJoinRequest(request);
+      if (validationError) { reply(fail(validationError)); return; }
+      const roomId = typeof request.roomId === 'string' ? request.roomId : DEFAULT_ROOM;
+      const name = typeof request.name === 'string' ? request.name : 'Guest';
       const wantsHost = request.host === true;
       const suppliedCapability = typeof request.hostCapability === 'string' ? request.hostCapability : undefined;
-      if (request.protocolVersion !== undefined && request.protocolVersion !== PROTOCOL_VERSION) { reply(fail('This session requires a newer Group Canvas client.')); return; }
-      if (typeof roomId !== 'string' || !ROOM_ID.test(roomId) || typeof name !== 'string' || name.trim().length < 1 || name.length > 32 || /[\u0000-\u001f\u007f]/.test(name) || (request.protocolVersion !== undefined && !Number.isSafeInteger(request.protocolVersion)) || (request.host !== undefined && typeof request.host !== 'boolean') || (request.hostCapability !== undefined && (typeof request.hostCapability !== 'string' || !ID.test(request.hostCapability))) || Object.keys(request).some(key => !['roomId', 'name', 'protocolVersion', 'host', 'hostCapability'].includes(key))) { reply(fail('Use a room ID of 1–48 letters, numbers, hyphens or underscores and a name of 1–32 characters.')); return; }
       if (room?.id === roomId) { sendSnapshot(); reply(ok); return; }
       if (Date.now() - lastJoin < 500) { reply(fail('Wait before switching rooms.')); return; }
       let next = rooms.get(roomId);
