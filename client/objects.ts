@@ -44,6 +44,35 @@ export function hitTestObject(point: Point, object: CanvasObject, tolerance = 6)
   return true;
 }
 
+function sampleStroke(points: Point[], maxStep: number): Point[] {
+  if (points.length < 2) return points;
+  const samples: Point[] = [points[0]!];
+  for (let index = 1; index < points.length; index++) {
+    const start = points[index - 1]!;
+    const end = points[index]!;
+    const distance = Math.hypot(end.x - start.x, end.y - start.y);
+    const steps = Math.max(1, Math.ceil(distance / maxStep));
+    for (let step = 1; step <= steps; step++) {
+      const progress = step / steps;
+      samples.push({
+        x: start.x + (end.x - start.x) * progress,
+        y: start.y + (end.y - start.y) * progress,
+      });
+    }
+  }
+  return samples;
+}
+
+export function shapesHitByEraser(points: Point[], width: number, objects: CanvasObject[]): string[] {
+  if (!points.length) return [];
+  const samples = sampleStroke(points, Math.max(4, width || 4));
+  const tolerance = Math.max(0, width / 2);
+  return objects
+    .filter((object) => object.type === 'shape')
+    .filter((object) => samples.some((point) => hitTestObject(point, object, tolerance)))
+    .map((object) => object.id);
+}
+
 export function constrainDrag(start: Point, end: Point, shape: ShapeKind, shift: boolean): DragGeometry {
   let width = end.x - start.x;
   let height = end.y - start.y;
