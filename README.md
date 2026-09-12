@@ -38,7 +38,7 @@ From **My canvases**, choose **Host** to start a managed session from a saved lo
 3. Undo from a different window, redo twice after two undos, then undo and draw something new. Redo should become unavailable.
 4. Open a fourth window while someone is drawing. It should receive both finished and unfinished strokes.
 5. Disconnect one window's network, then reconnect. Drawing is disabled while offline and no offline stroke is replayed. Reload another window to confirm the same state.
-6. Restart the backend. The canvas resets because there is no persistent storage; reconnecting clients show a session-reset notice.
+6. Restart the backend. Without `PERSISTENCE_PATH`, the canvas resets because storage is intentionally ephemeral. With a durable `PERSISTENCE_PATH`, completed room state and image assets are restored on startup.
 
 ## Free deployment
 
@@ -49,9 +49,9 @@ Live demo: **https://group-canva.pages.dev**. The current backend health endpoin
 3. Create a Cloudflare Pages project with build command `npm ci && npm run build`, output directory `dist/client`, and Node version `24.19.0`. Set **build-time** `VITE_SERVER_URL=https://your-service.onrender.com`. Socket.io upgrades this HTTPS endpoint to secure WebSocket transport.
 4. Redeploy the static frontend whenever `VITE_SERVER_URL` changes. For this repository, the public Pages hostname also has a narrow production-host fallback to the Render URL so the demo remains usable if a Pages build mode fails to inject the public build variable. Open the public Pages URL in several browsers and repeat the walkthrough.
 
-`VITE_SERVER_URL` is public configuration, never a secret. For local development it defaults to the page's origin and Vite proxies `/socket.io` to `BACKEND_PORT` (or `PORT`, then 3000). Backend `PORT`, `HOST`, and `ALLOWED_ORIGINS` are process environment variables; `.env.example` is a reference and is not automatically loaded by Node. If a backend port is already occupied, stop the old process or choose a free `PORT`/`BACKEND_PORT` pair before starting the dev server.
+`VITE_SERVER_URL` is public configuration, never a secret. For local development it defaults to the page's origin and Vite proxies `/socket.io` to `BACKEND_PORT` (or `PORT`, then 3000). Backend `PORT`, `HOST`, `ALLOWED_ORIGINS`, and optional `PERSISTENCE_PATH` are process environment variables; `.env.example` is a reference and is not automatically loaded by Node. Persistence uses atomic JSON snapshots and bounded base64 image assets, so production deployments need a durable filesystem or external storage. If a backend port is already occupied, stop the old process or choose a free `PORT`/`BACKEND_PORT` pair before starting the dev server.
 
-Cloudflare distributes the interface globally; the drawing stream still travels to the authoritative Singapore server. Render Free can spin down after **15 minutes without inbound traffic**, take **about a minute** to wake, and restart at any time. Restarting clears this app's memory. Free quotas also apply; do not enable paid upgrades or artificial keep-alive requests. See [Render Free](https://render.com/docs/free), [Render regions](https://render.com/docs/regions), and [Cloudflare Vite deployment](https://developers.cloudflare.com/pages/framework-guides/deploy-a-vite3-project/).
+Cloudflare distributes the interface globally; the drawing stream still travels to the authoritative Singapore server. Render Free can spin down after **15 minutes without inbound traffic**, take **about a minute** to wake, and restart at any time. Set `PERSISTENCE_PATH` to a durable mounted path to retain completed room snapshots and assets across graceful restarts; an ephemeral service filesystem does not provide durable recovery. Free quotas also apply; do not enable paid upgrades or artificial keep-alive requests. See [Render Free](https://render.com/docs/free), [Render regions](https://render.com/docs/regions), and [Cloudflare Vite deployment](https://developers.cloudflare.com/pages/framework-guides/deploy-a-vite3-project/).
 
 ## Release verification
 
@@ -72,7 +72,7 @@ The hosted verifier requires an HTTPS frontend URL, an HTTPS backend URL, and a 
 
 - Local files and image assets are stored in browser IndexedDB. Use **Download project** for portable backups; clearing browser storage removes local files.
 - Projects support brush/eraser, selection, rectangles, ellipses, lines, arrows, multiline text, and PNG/JPEG/WebP images. PNG export is a separate content-only action.
-- Host sessions use temporary in-memory room state and a private host capability. Guests can edit shared content but do not receive local project ownership controls. A join URL is not an account-based security boundary.
+- Host sessions use in-memory room state by default, or atomic restart snapshots when `PERSISTENCE_PATH` points to durable storage. Guests can edit shared content but do not receive local project ownership controls. A join URL is not an account-based security boundary.
 - One authoritative process. Memory/capacity and message-rate limits reject excess work with a visible error; this is a bounded demo, not an unbounded archive.
 - Offline input is intentionally unavailable. A disconnect cancels unfinished strokes once the server detects it. A cold server may leave the UI in reconnecting state for a minute.
 - Ink layer order follows **stroke start**, while transaction undo follows **completion**. Shapes, text, and images render above the transparent ink layer; erasers affect ink only. An earlier stroke's late-arriving points remain under a later eraser.

@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { io, type Socket } from 'socket.io-client';
 import { createAppServer } from '../server/app.js';
 import type { ClientEvents, ServerEvents, Snapshot, DrawingEvent, Result, Command } from '../shared/protocol.js';
@@ -181,6 +184,26 @@ describe('authoritative websocket collaboration', () => {
     const result = await new Promise<Result>(resolve => socket.emit('room:join', { roomId: 'protocol-mismatch', name: 'Old client', protocolVersion: 1 }, resolve));
     expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/newer|version/i) });
     expect((await (await fetch(`${server.url}/health`)).json()).rooms).toBe(0);
+  });
+
+  it('restores completed room state after a server restart', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'group-canvas-persistence-'));
+    const persistencePath = join(directory, 'rooms.json');
+    try {
+      const first = await start({ persistencePath });
+      const original = await connect(first.url, 'durable-room');
+      await complete(original.socket, 'durable-stroke');
+      const before = await resync(original.socket);
+      await first.close();
+
+      const second = await start({ persistencePath });
+      const restored = await connect(second.url, 'durable-room');
+      expect(restored.snapshot.epoch).toBe(before.epoch);
+      expect(restored.snapshot.revision).toBe(before.revision);
+      expect(restored.snapshot.strokes).toEqual(before.strokes);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('enforces user, stroke and point capacity without partially applying rejected commands', async () => {
@@ -378,6 +401,28 @@ describe('authoritative websocket collaboration', () => {
     expect(invalid.status).toBe(400);
     expect(events).toEqual([]);
     expect((await resync(peer.socket)).document?.objects).toEqual([]);
+  });
+
+  it('restores uploaded assets with a fresh participant token after restart', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'group-canvas-assets-'));
+    const persistencePath = join(directory, 'rooms.json');
+    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1]);
+    try {
+      const first = await start({ persistencePath });
+      const peer = await connect(first.url, 'asset-room');
+      const upload = await fetch(`${first.url}/api/rooms/asset-room/assets`, { method: 'POST', headers: { 'content-type': 'image/png', 'x-room-token': peer.snapshot.assetToken!, 'x-asset-id': 'persisted-pixel' }, body: png });
+      expect(upload.status).toBe(201);
+      await first.close();
+
+      const second = await start({ persistencePath });
+      const restored = await connect(second.url, 'asset-room');
+      expect(restored.snapshot.assets).toEqual([{ id: 'persisted-pixel', mimeType: 'image/png', width: 1, height: 1, byteLength: 24 }]);
+      const download = await fetch(`${second.url}/api/rooms/asset-room/assets/persisted-pixel`, { headers: { 'x-room-token': restored.snapshot.assetToken! } });
+      expect(download.status).toBe(200);
+      expect([...new Uint8Array(await download.arrayBuffer())]).toEqual([...png]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('pauses managed rooms for host recovery and rejects stale host operations', async () => {

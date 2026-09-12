@@ -24,9 +24,27 @@ test('PNG export is content-sized instead of capturing the editor viewport', asy
   const download = await downloadPromise;
   const path = await download.path();
   expect(path).not.toBeNull();
-  const size = pngSize(new Uint8Array(await readFile(path!)));
+  const bytes = new Uint8Array(await readFile(path!));
+  const size = pngSize(bytes);
   expect(size.width).toBeGreaterThan(100);
   expect(size.height).toBeGreaterThan(100);
   expect(size.width).toBeLessThan(1600);
   expect(size.height).toBeLessThan(900);
+  const coloredPixels = await page.evaluate(async (base64) => {
+    const image = new Image();
+    image.src = `data:image/png;base64,${base64}`;
+    await image.decode();
+    const surface = document.createElement('canvas');
+    surface.width = image.naturalWidth;
+    surface.height = image.naturalHeight;
+    const context = surface.getContext('2d')!;
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, surface.width, surface.height).data;
+    let count = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      if (pixels[index]! < 240 || pixels[index + 1]! < 240 || pixels[index + 2]! < 240) count++;
+    }
+    return count;
+  }, Buffer.from(bytes).toString('base64'));
+  expect(coloredPixels).toBeGreaterThan(100);
 });

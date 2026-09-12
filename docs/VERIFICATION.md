@@ -132,7 +132,7 @@ The sequential roadmap work was completed on branch `codex/group-canvas-roadmap`
 ### Commands and results
 
 - `npm run typecheck` — passed.
-- `npm test` — **87 passed** across 12 files.
+- `npm test` — **89 passed** across 12 files.
 - `$env:E2E_PORT=3339; npm run test:e2e` — **40 passed** in Chromium/WebKit; 20 Firefox cases failed before execution because Playwright Firefox launch returns Windows `spawn UNKNOWN`. This is an environment failure, not an application assertion.
 - `npm run benchmark -- task8-final` — passed. The saved same-machine report is [benchmarks/results/task8-final.json](../benchmarks/results/task8-final.json); it retained the ten-client/five-author workload with zero missing batches, zero duplicate batches, and zero acknowledgement failures across three repetitions.
 - `npm run verify:hosted` — not runnable in this environment because `E2E_BASE_URL`/`BENCH_FRONTEND_URL` and `BENCH_SERVER_URL` were not configured. No hosted claim is made from this run.
@@ -142,5 +142,11 @@ The sequential roadmap work was completed on branch `codex/group-canvas-roadmap`
 Focused final browser checks passed in Chromium and WebKit for local files, images, host recovery, bounded PNG export, IndexedDB deletion recovery, text, shapes, compositing, and the shared whiteboard flows. Failure-injection coverage also covers Socket.IO disconnect/revision recovery, duplicate operations, write failure preservation, protocol mismatch, missing/unauthorized assets, and camera zoom bounds.
 
 ### Release and rollback record
-
 Required local configuration is `VITE_SERVER_URL` at frontend build time and an exact frontend origin in backend `ALLOWED_ORIGINS`; local same-origin development can omit `VITE_SERVER_URL`. The known port-conflict recovery is to select a fresh `E2E_PORT` for Playwright or a matched free `PORT`/`BACKEND_PORT` pair. The manual release order is backend deploy and `/health`/WebSocket verification first, frontend bundle publish second, then browser smoke and hosted verification. Preserve the prior backend deployment URL and frontend preview URL as rollback targets. No deploy, merge, or push was performed for this gate.
+
+## Follow-up reliability fixes (12 September 2026)
+
+- The Firefox launch failure was reproduced outside Playwright: Windows reports a SideBySide event because the Playwright Firefox bundle cannot activate its `mozglue` assembly. A forced Playwright reinstall did not change that machine-level failure; the suite remains unchanged so it cannot hide the problem.
+- `PERSISTENCE_PATH` now enables atomic server snapshots of completed room state and bounded image assets. Restart integration tests restore the room epoch, revision, strokes, and assets with a fresh participant token. Managed rooms reload paused until host recovery.
+- Hosted transport verification was rerun against `https://group-canva.pages.dev` and `https://group-canvas.onrender.com`: frontend HTTP 200, backend health OK, exact origin accepted over WebSocket, unrelated origin rejected. The evidence is retained in `benchmarks/results/hosted-transport.json`.
+- Hosted browser smoke was not claimed: the live frontend stalled on the second local-canvas workflow because the deployment predates the current worktree revision. No deployment was performed.

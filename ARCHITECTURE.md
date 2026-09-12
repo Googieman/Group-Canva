@@ -71,7 +71,7 @@ Snapshots are constructed and emitted synchronously in the room's serialized eve
 
 On disconnect the browser discards pending batches and predictions; the server cancels every unfinished operation owned by that connection when it detects departure. Completed history stays in memory. Reconnect uses jittered exponential backoff and a fresh snapshot with a fresh connection identity. No local drawing is replayed. Resync during a gesture also abandons it; any unfinished operation owned by that same connection is canceled after hydration.
 
-Every room lifetime has a new random epoch. Restarting the process or recreating an expired room changes it. Returning clients show a session-reset message. This is honest loss of ephemeral state, not a fabricated recovery from persistence.
+Every newly created room has a random epoch. When `PERSISTENCE_PATH` is configured, the server writes bounded atomic snapshots of completed room state and validated image assets, then restores the same epoch and revision after restart. Managed rooms reload paused until their host reconnects and restores/saves the latest local document. Without that option, rooms remain intentionally ephemeral and returning clients show a session-reset message.
 
 ## Validation and bounded resources
 

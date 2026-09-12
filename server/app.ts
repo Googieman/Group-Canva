@@ -1,7 +1,8 @@
 import express from 'express';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { Server, type Socket } from 'socket.io';
 import { applyDocumentCommand, createDocument, createHistory, documentToLegacyStrokes, legacyStrokesToDocument, validateDocument, type CanvasDocument, type CanvasObject, type DocumentCommand, type DocumentHistory, type LeaseCommand, type Transaction } from '../shared/document.js';
 import { BATCH_SIZE, DEFAULT_ROOM, PROTOCOL_VERSION, type AssetMeta, type Change, type ClientEvents, type Command, type Point, type Result, type ServerEvents, type Snapshot, type Stroke, type StrokeCommand, type User } from '../shared/protocol.js';
@@ -16,7 +17,7 @@ const DEFAULT_LIMITS: Limits = {
   pointsPerStroke: 10000, pointsPerRoom: 50000, totalPoints: 250000, usedIdsPerRoom: 20000,
   commandsPerSecond: 150, commandBurst: 300, operationResultsPerRoom: 4096, idleRoomMs: 30 * 60 * 1000, hostGraceMs: 2 * 60 * 1000, assetPerImageBytes: 5 * 1024 * 1024, assetsPerRoomBytes: 20 * 1024 * 1024, totalAssetBytes: 100 * 1024 * 1024,
 };
-export interface ServerOptions { port?: number; host?: string; allowedOrigins?: string[]; limits?: Partial<Limits>; staticDir?: string; onCommandTiming?: (durationMs: number) => void }
+export interface ServerOptions { port?: number; host?: string; allowedOrigins?: string[]; limits?: Partial<Limits>; staticDir?: string; persistencePath?: string; onCommandTiming?: (durationMs: number) => void }
 interface Room {
   id: string; epoch: string; revision: number; nextOrder: number; nextCompletion: number;
   strokes: Map<string, Stroke>; usedIds: Set<string>; users: Map<string, User>;
@@ -38,6 +39,15 @@ function optionalOperation(value: Record<string, unknown>, allowed: string[]): b
   if (Object.keys(value).some(key => !allowed.includes(key))) return false;
   return !('operationId' in value) || (typeof value.operationId === 'string' && ID.test(value.operationId));
 }
+interface PersistedRoom {
+  id: string; epoch: string; revision: number; nextOrder: number; nextCompletion: number;
+  strokes: Stroke[]; usedIds: string[]; redoIds: string[]; points: number;
+  document: CanvasDocument; documentHistory: DocumentHistory;
+  assets: Array<{ meta: AssetMeta; bytes: string }>;
+  hiddenInkIds: string[]; managed: boolean; hostCapability: string;
+  status: Room['status']; hostWatermark: Room['hostWatermark']; documentMode: boolean;
+}
+interface PersistedState { version: 1; rooms: PersistedRoom[]; endedManagedRooms: string[] }
 function expectedVersions(value: unknown): value is Record<string, number> {
   return record(value) && Object.entries(value).every(([id, version]) => ID.test(id) && Number.isSafeInteger(version) && (version as number) >= 1);
 }
@@ -97,7 +107,104 @@ export async function createAppServer(options: ServerOptions = {}) {
   let totalPoints = 0;
   let totalAssetBytes = 0;
   let closing = false;
+  let persistenceTimer: ReturnType<typeof setTimeout> | undefined;
+  let persistenceQueue = Promise.resolve();
   const app = express();
+  function serializeState(): PersistedState {
+    return {
+      version: 1,
+      rooms: [...rooms.values()].filter(room => room.status !== 'ended').map(room => ({
+        id: room.id,
+        epoch: room.epoch,
+        revision: room.revision,
+        nextOrder: room.nextOrder,
+        nextCompletion: room.nextCompletion,
+        strokes: [...room.strokes.values()].map(stroke => structuredClone(stroke)),
+        usedIds: [...room.usedIds],
+        redoIds: [...room.redoIds],
+        points: room.points,
+        document: structuredClone(room.document),
+        documentHistory: structuredClone(room.documentHistory),
+        assets: [...room.assets.values()].map(asset => ({ meta: structuredClone(asset.meta), bytes: asset.bytes.toString('base64') })),
+        hiddenInkIds: [...room.hiddenInkIds],
+        managed: room.managed,
+        hostCapability: room.hostCapability,
+        status: room.status,
+        hostWatermark: room.hostWatermark,
+        documentMode: room.documentMode,
+      })),
+      endedManagedRooms: [...endedManagedRooms],
+    };
+  }
+  async function writeState(state: PersistedState): Promise<void> {
+    if (!options.persistencePath) return;
+    await mkdir(dirname(options.persistencePath), { recursive: true });
+    const temporaryPath = `${options.persistencePath}.${process.pid}.tmp`;
+    await writeFile(temporaryPath, JSON.stringify(state), 'utf8');
+    await rename(temporaryPath, options.persistencePath);
+  }
+  function persistNow(): Promise<void> {
+    if (!options.persistencePath) return Promise.resolve();
+    const state = serializeState();
+    persistenceQueue = persistenceQueue.catch(() => undefined).then(() => writeState(state));
+    return persistenceQueue;
+  }
+  function schedulePersistence(): void {
+    if (!options.persistencePath || persistenceTimer) return;
+    persistenceTimer = setTimeout(() => { persistenceTimer = undefined; void persistNow(); }, 25);
+    persistenceTimer.unref();
+  }
+  async function restorePersistence(): Promise<void> {
+    if (!options.persistencePath) return;
+    let state: PersistedState;
+    try {
+      state = JSON.parse(await readFile(options.persistencePath, 'utf8')) as PersistedState;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw new Error(`Unable to restore persisted rooms: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (state.version !== 1 || !Array.isArray(state.rooms)) throw new Error('Unable to restore persisted rooms: unsupported state format.');
+    for (const roomState of state.rooms) {
+      if (roomState.status === 'ended') { if (roomState.managed) endedManagedRooms.add(roomState.id); continue; }
+      const documentValidation = validateDocument(roomState.document);
+      if (!documentValidation.ok || !Array.isArray(roomState.strokes) || !Array.isArray(roomState.assets)) continue;
+      const assets = new Map<string, { meta: AssetMeta; bytes: Buffer }>();
+      for (const asset of roomState.assets) {
+        const bytes = Buffer.from(asset.bytes, 'base64');
+        if (bytes.length !== asset.meta.byteLength) continue;
+        assets.set(asset.meta.id, { meta: structuredClone(asset.meta), bytes });
+      }
+      const room: Room = {
+        id: roomState.id,
+        epoch: roomState.epoch,
+        revision: roomState.revision,
+        nextOrder: roomState.nextOrder,
+        nextCompletion: roomState.nextCompletion,
+        strokes: new Map(roomState.strokes.map(stroke => [stroke.id, structuredClone(stroke)])),
+        usedIds: new Set(roomState.usedIds),
+        users: new Map(),
+        unfinished: new Map(),
+        redoIds: [...roomState.redoIds],
+        points: roomState.points,
+        document: structuredClone(roomState.document),
+        documentHistory: structuredClone(roomState.documentHistory),
+        operationResults: new Map(),
+        leases: new Map(),
+        assets,
+        hiddenInkIds: new Set(roomState.hiddenInkIds),
+        managed: roomState.managed,
+        hostSocketId: null,
+        hostCapability: roomState.hostCapability,
+        status: roomState.managed && roomState.status === 'active' ? 'paused' : roomState.status,
+        hostWatermark: roomState.hostWatermark,
+        documentMode: roomState.documentMode,
+      };
+      rooms.set(room.id, room);
+      totalPoints += room.points;
+      totalAssetBytes += [...room.assets.values()].reduce((sum, asset) => sum + asset.bytes.length, 0);
+    }
+    for (const roomId of state.endedManagedRooms ?? []) endedManagedRooms.add(roomId);
+  }
   const allowedOrigins = new Set(options.allowedOrigins ?? (process.env.ALLOWED_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean));
   app.disable('x-powered-by');
   app.get('/health', (_request, response) => response.json({ status: 'ok', rooms: rooms.size }));
@@ -140,7 +247,7 @@ export async function createAppServer(options: ServerOptions = {}) {
     if (body.length < 1 || body.length > limits.assetPerImageBytes || totalAssetBytes + body.length > limits.totalAssetBytes || [...access.room.assets.values()].reduce((sum, asset) => sum + asset.bytes.length, 0) + body.length > limits.assetsPerRoomBytes) return response.status(413).json({ error: 'Asset storage limit exceeded.' });
     if (access.room.assets.has(assetId)) return response.status(409).json({ error: 'Asset ID was already used.' });
     const dimensions = mediaDimensions(body, mimeType); if (!dimensions || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > 4096 || dimensions.height > 4096 || dimensions.width * dimensions.height > 16 * 1024 * 1024) return response.status(400).json({ error: 'Image signature or dimensions are invalid.' });
-    const meta: AssetMeta = { id: assetId, mimeType: mimeType as AssetMeta['mimeType'], width: dimensions.width, height: dimensions.height, byteLength: body.length }; access.room.assets.set(assetId, { meta, bytes: body }); totalAssetBytes += body.length; return response.status(201).json(meta);
+    const meta: AssetMeta = { id: assetId, mimeType: mimeType as AssetMeta['mimeType'], width: dimensions.width, height: dimensions.height, byteLength: body.length }; access.room.assets.set(assetId, { meta, bytes: body }); totalAssetBytes += body.length; schedulePersistence(); return response.status(201).json(meta);
   });
   app.get('/api/rooms/:roomId/assets/:assetId', (request, response) => { const access = tokenFor(request, request.params.roomId); if (!access) return response.status(401).json({ error: 'A valid room participant token is required.' }); const asset = access.room.assets.get(request.params.assetId); if (!asset) return response.status(404).json({ error: 'Asset unavailable.' }); response.type(asset.meta.mimeType).send(asset.bytes); });
   app.use(express.static(options.staticDir ?? resolve(process.cwd(), 'dist/client'), { maxAge: 0 }));
@@ -170,6 +277,7 @@ export async function createAppServer(options: ServerOptions = {}) {
     for (const [token, owner] of assetTokens) if (owner.roomId === room.id) assetTokens.delete(token);
     rooms.delete(room.id);
     if (room.managed && room.status === 'ended') { endedManagedRooms.add(room.id); while (endedManagedRooms.size > 4096) endedManagedRooms.delete(endedManagedRooms.values().next().value!); }
+    schedulePersistence();
   }
   function syncLegacyDocument(room: Room): void {
     const legacy = legacyStrokesToDocument([...room.strokes.values()].filter(stroke => stroke.completed && stroke.active && !room.hiddenInkIds.has(stroke.id)), room.document.id, room.document.title);
@@ -222,6 +330,7 @@ export async function createAppServer(options: ServerOptions = {}) {
     io.to(`canvas:${room.id}`).emit('drawing:event', { epoch: room.epoch, revision: room.revision, change });
     armHostSaveDeadline(room);
     protectSlowPeers(room);
+    schedulePersistence();
   }
   function discard(room: Room, id: string) {
     const stroke = room.strokes.get(id);
@@ -244,6 +353,7 @@ export async function createAppServer(options: ServerOptions = {}) {
     io.to(`canvas:${room.id}`).emit('drawing:event', { epoch: room.epoch, revision: room.revision, change: { type: 'document:transaction', transaction: result.transaction, document: result.document, history: result.history } });
     armHostSaveDeadline(room);
     protectSlowPeers(room);
+    schedulePersistence();
   }
   function currentLeases(room: Room): Array<{ objectId: string; userId: string }> {
     const now = Date.now();
@@ -268,6 +378,7 @@ export async function createAppServer(options: ServerOptions = {}) {
         removeRoom(room);
       }, limits.hostGraceMs);
       room.hostGrace.unref();
+      schedulePersistence();
     }
     socket.leave(`canvas:${room.id}`);
     cancel(room, socket.id);
@@ -476,6 +587,7 @@ export async function createAppServer(options: ServerOptions = {}) {
       if (!next) {
         next = { id: roomId, epoch: randomUUID(), revision: 0, nextOrder: 0, nextCompletion: 0, strokes: new Map(), usedIds: new Set(), users: new Map(), unfinished: new Map(), redoIds: [], points: 0, document: createDocument(randomUUID(), roomId), documentHistory: createHistory(), operationResults: new Map(), leases: new Map(), assets: new Map(), hiddenInkIds: new Set(), managed: wantsHost, hostSocketId: null, hostCapability: randomUUID(), status: 'active', hostWatermark: null, documentMode: true };
         rooms.set(roomId, next);
+        schedulePersistence();
       }
       if (room) { releaseLeases(room, socket.id); leave(socket, room); }
       clearTimeout(next.expires); delete next.expires;
@@ -515,6 +627,7 @@ export async function createAppServer(options: ServerOptions = {}) {
       totalPoints += points - room.points;
       room.points = points; room.strokes = new Map(strokes.map(stroke => [stroke.id, stroke])); room.usedIds = new Set(strokes.map(stroke => stroke.id)); room.hiddenInkIds.clear(); room.unfinished.clear(); room.redoIds = [];
       room.nextOrder = Math.max(0, ...document.objects.map(object => object.order)); room.nextCompletion = Math.max(0, ...strokes.map(stroke => stroke.completionOrder ?? 0)); room.document = document; room.documentHistory = createHistory(); room.documentMode = true; room.revision++; room.status = 'active'; room.hostWatermark = { epoch: room.epoch, revision: room.revision };
+      schedulePersistence();
       announceStatus(room, 'The host restored the saved canvas. Editing is active.');
       for (const participant of room.users.keys()) io.sockets.sockets.get(participant)?.emit('room:snapshot', snapshot(room, participant));
       io.to(`canvas:${room.id}`).emit('room:host-save', room.hostWatermark);
@@ -523,6 +636,7 @@ export async function createAppServer(options: ServerOptions = {}) {
     socket.on('room:host-saved', payload => {
       if (!room || !room.managed || room.hostSocketId !== socket.id || !record(payload) || payload.capability !== room.hostCapability || payload.epoch !== room.epoch || !Number.isSafeInteger(payload.revision) || payload.revision < 0 || payload.revision > room.revision) { socket.emit('server:error', 'The host save watermark was rejected.'); return; }
       room.hostWatermark = { epoch: payload.epoch, revision: payload.revision }; if (room.status === 'paused' && room.hostSocketId === socket.id) { room.status = 'active'; announceStatus(room, 'Host saving has recovered. Editing is active again.'); } armHostSaveDeadline(room);
+      schedulePersistence();
       io.to(`canvas:${room.id}`).emit('room:host-save', room.hostWatermark);
     });
     socket.on('room:end', (payload, ack) => {
@@ -542,6 +656,7 @@ export async function createAppServer(options: ServerOptions = {}) {
     if (room) { const prior = room; room = undefined; releaseLeases(prior, socket.id); leave(socket, prior); }
     });
   });
+  await restorePersistence();
   await new Promise<void>((resolveListen, reject) => {
     httpServer.once('error', reject);
     httpServer.listen(options.port ?? 0, options.host ?? '0.0.0.0', () => { httpServer.off('error', reject); resolveListen(); });
@@ -553,6 +668,8 @@ export async function createAppServer(options: ServerOptions = {}) {
     httpServer, io, url: `http://${host}:${address.port}`,
     async close() {
       if (closing) return;
+      if (persistenceTimer) { clearTimeout(persistenceTimer); persistenceTimer = undefined; }
+      await persistNow();
       closing = true;
       for (const entry of rooms.values()) clearTimeout(entry.expires);
       await new Promise<void>(resolveClose => io.close(() => resolveClose()));
