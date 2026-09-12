@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CanvasBoard, toLogicalPoint, filterSamples, orderedVisibleStrokes } from '../client/canvas';
+import { CanvasBoard, toLogicalPoint, filterSamples, orderedVisibleStrokes, laterErasers } from '../client/canvas';
 import type { Stroke } from '../shared/protocol';
 
 const stroke = (id: string, order: number, completed = true): Stroke => ({
@@ -26,6 +26,13 @@ describe('canvas geometry', () => {
     const strokes = [stroke('late', 3), undone, stroke('early', 1, false)];
     expect(orderedVisibleStrokes(strokes).map(s => s.id)).toEqual(['early', 'late']);
     expect(strokes[0].id).toBe('late');
+  });
+  it('assigns each eraser only to earlier ink, across intervening objects', () => {
+    const earlier = stroke('earlier', 1);
+    const eraser: Stroke = { ...stroke('eraser', 3), tool: 'eraser' };
+    const later = stroke('later', 4);
+    expect(laterErasers(earlier, [earlier, eraser, later]).map(value => value.id)).toEqual(['eraser']);
+    expect(laterErasers(later, [earlier, eraser, later])).toEqual([]);
   });
 });
 

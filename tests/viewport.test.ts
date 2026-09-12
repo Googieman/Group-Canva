@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fitCamera, screenToWorld, SpatialIndex, worldToScreen, zoomAround, panCamera, type Viewport } from '../client/viewport';
+import { fitCamera, screenToWorld, SpatialIndex, worldToScreen, zoomAround, panCamera, scalePanDelta, type Viewport } from '../client/viewport';
 
 const viewport: Viewport = { width: 800, height: 600 };
 
@@ -27,6 +27,10 @@ describe('camera transforms', () => {
     expect(zoomAround({ x: 0, y: 0, zoom: 1 }, 0.001, { x: 400, y: 300 }, viewport).zoom).toBe(0.1);
     expect(zoomAround({ x: 0, y: 0, zoom: 1 }, 100, { x: 400, y: 300 }, viewport).zoom).toBe(4);
     expect(panCamera({ x: 100_000, y: -100_000, zoom: 0.1 }, { x: -100_000, y: 100_000 })).toEqual({ x: 100_000, y: -100_000, zoom: 0.1 });
+  });
+
+  it('scales CSS pan deltas into the logical board at half display size', () => {
+    expect(scalePanDelta({ x: 20, y: -10 }, { width: 800, height: 450 })).toEqual({ x: 40, y: -20 });
   });
 
   it('culls indexed bounds while retaining oversized objects in an overflow list', () => {

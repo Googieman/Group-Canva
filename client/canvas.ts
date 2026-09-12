@@ -1,6 +1,6 @@
 import { BOARD_HEIGHT, BOARD_WIDTH, type Point, type Stroke, type Tool } from '../shared/protocol';
 import { objectBounds as documentObjectBounds, type CanvasObject } from '../shared/document';
-import { panCamera, screenToWorld, SpatialIndex, zoomAround, type Camera } from './viewport';
+import { panCamera, scalePanDelta, screenToWorld, SpatialIndex, zoomAround, type Camera } from './viewport';
 import { diagnostics } from './diagnostics';
 
 export interface CanvasCallbacks {
@@ -75,6 +75,10 @@ function sameInk(a: Stroke, b: Stroke): boolean {
     && a.width === b.width && a.completed === b.completed && a.completionOrder === b.completionOrder && a.active === b.active
     && a.points.length === b.points.length
     && a.points.every((point, i) => point.x === b.points[i].x && point.y === b.points[i].y);
+}
+
+export function laterErasers(stroke: Stroke, strokes: readonly Stroke[]): Stroke[] {
+  return strokes.filter(candidate => candidate.tool === 'eraser' && candidate.active && candidate.order > stroke.order).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
 }
 
 function sameObject(a: CanvasObject, b: CanvasObject): boolean {
@@ -454,7 +458,7 @@ export class CanvasBoard {
   private movePointer(event: PointerEvent): void {
     if (!this.enabled || (this.pointerId !== null && event.pointerId !== this.pointerId) || (this.panPointerId !== null && event.pointerId !== this.panPointerId)) return;
     if (this.panPointerId === event.pointerId) {
-      if (this.panLast) this.setCamera(panCamera(this.camera, { x: event.clientX - this.panLast.x, y: event.clientY - this.panLast.y }));
+      if (this.panLast) this.setCamera(panCamera(this.camera, scalePanDelta({ x: event.clientX - this.panLast.x, y: event.clientY - this.panLast.y }, this.canvas.getBoundingClientRect())));
       this.panLast = { x: event.clientX, y: event.clientY }; return;
     }
     this.callbacks.onCursor(this.point(event));
@@ -469,7 +473,7 @@ export class CanvasBoard {
     if (this.touchPoints.size >= 2) {
       const next = this.touchMetrics();
       if (this.touchGesture) {
-        const delta = { x: next.center.x - this.touchGesture.center.x, y: next.center.y - this.touchGesture.center.y };
+        const delta = scalePanDelta({ x: next.center.x - this.touchGesture.center.x, y: next.center.y - this.touchGesture.center.y }, this.canvas.getBoundingClientRect());
         let camera = panCamera(this.camera, delta);
         const screen = toLogicalPoint(next.center.x, next.center.y, this.canvas.getBoundingClientRect());
         if (screen && this.touchGesture.distance > 0) camera = zoomAround(camera, next.distance / this.touchGesture.distance, screen, { width: BOARD_WIDTH, height: BOARD_HEIGHT });
@@ -790,8 +794,14 @@ export class CanvasBoard {
     };
     for (const item of items) {
       if (item.stroke) {
-        renderInkStroke(this.cacheContext, item.stroke, this.pathFor(item.stroke));
-        inkPending = true;
+        if (item.stroke.tool === 'eraser') continue;
+        if (laterErasers(item.stroke, this.strokes).length) {
+          flushInk();
+          this.renderOrderedInk(this.context, item.stroke, this.strokes, worldTransform);
+        } else {
+          renderInkStroke(this.cacheContext, item.stroke, this.pathFor(item.stroke));
+          inkPending = true;
+        }
       } else {
         flushInk();
         drawObject(this.context, item.object!, this.assets, this.fontReady);
@@ -804,6 +814,34 @@ export class CanvasBoard {
     this.fullRepaint = false;
     diagnostics?.record('renderMs', performance.now() - started);
     diagnostics?.painted();
+  }
+
+  private renderOrderedInk(
+    target: CanvasRenderingContext2D,
+    stroke: Stroke,
+    strokes: readonly Stroke[],
+    worldTransform: (context: CanvasRenderingContext2D) => void,
+  ): void {
+    const erasers = laterErasers(stroke, strokes);
+    if (!erasers.length) {
+      worldTransform(target);
+      renderInkStroke(target, stroke, this.pathFor(stroke));
+      return;
+    }
+    const layer = document.createElement('canvas');
+    layer.width = this.canvas.width;
+    layer.height = this.canvas.height;
+    const layerContext = layer.getContext('2d');
+    if (!layerContext) return;
+    layerContext.setTransform(1, 0, 0, 1, 0, 0);
+    layerContext.clearRect(0, 0, layer.width, layer.height);
+    worldTransform(layerContext);
+    renderInkStroke(layerContext, stroke, this.pathFor(stroke));
+    for (const eraser of erasers) renderInkStroke(layerContext, eraser, this.pathFor(eraser));
+    target.setTransform(1, 0, 0, 1, 0, 0);
+    target.globalCompositeOperation = 'source-over';
+    target.drawImage(layer, 0, 0);
+    worldTransform(target);
   }
 
   private renderCameraFrame(): void {

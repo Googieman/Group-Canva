@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDocument, type CanvasDocument } from '../shared/document';
-import { contentBounds, exportDimensions, exportDocumentPng } from '../client/export';
+import { contentBounds, exportDimensions, exportDocumentPng, validatePngExportInputs } from '../client/export';
 
 describe('PNG export bounds', () => {
   it('keeps normal exports at source size', () => {
@@ -27,6 +27,29 @@ describe('PNG export bounds', () => {
 
   it('returns no bounds for an empty document', () => {
     expect(contentBounds(createDocument('empty-export'))).toBeNull();
+  });
+
+  it('blocks PNG export when a referenced image has not been decoded', async () => {
+    const document: CanvasDocument = {
+      ...createDocument('missing-image-export'),
+      assetIds: ['asset-1'],
+      objects: [{
+        id: 'image-1', type: 'image', order: 1, version: 1, translation: { x: 0, y: 0 },
+        assetId: 'asset-1', intrinsicWidth: 1, intrinsicHeight: 1, width: 10, height: 10,
+      }],
+    };
+    await expect(exportDocumentPng(document, new Map())).rejects.toThrow(/image|decode|asset/i);
+  });
+
+  it('blocks PNG export while document fonts are not ready', () => {
+    const document: CanvasDocument = {
+      ...createDocument('loading-font-export'),
+      objects: [{
+        id: 'text-1', type: 'text', order: 1, version: 1, translation: { x: 0, y: 0 },
+        text: 'Draft', width: 120, fontSize: 24, color: '#000000', lineHeight: 1.2,
+      }],
+    };
+    expect(() => validatePngExportInputs(document, new Map(), false)).toThrow(/font/i);
   });
 
   it('applies ink translation and preserves mixed document order during export', async () => {

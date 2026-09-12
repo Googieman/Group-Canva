@@ -1,4 +1,5 @@
 import { WORLD_LIMIT } from '../shared/document';
+import { BOARD_HEIGHT, BOARD_WIDTH } from '../shared/protocol';
 import type { Point } from '../shared/protocol';
 
 export const MIN_ZOOM = 0.1;
@@ -84,6 +85,11 @@ export function zoomAround(camera: Camera, factor: number, screenPoint: Point, v
 export function panCamera(camera: Camera, deltaScreen: Point): Camera {
   const zoom = safeZoom(camera.zoom);
   return { x: Math.max(-WORLD_LIMIT, Math.min(WORLD_LIMIT, camera.x - deltaScreen.x / zoom)), y: Math.max(-WORLD_LIMIT, Math.min(WORLD_LIMIT, camera.y - deltaScreen.y / zoom)), zoom };
+}
+
+export function scalePanDelta(deltaCss: Point, viewport: Pick<Viewport, 'width' | 'height'>): Point {
+  if (viewport.width <= 0 || viewport.height <= 0) return { x: 0, y: 0 };
+  return { x: deltaCss.x * BOARD_WIDTH / viewport.width, y: deltaCss.y * BOARD_HEIGHT / viewport.height };
 }
 
 export function fitCamera(bounds: Bounds, viewport: Viewport, padding = 40): Camera {
