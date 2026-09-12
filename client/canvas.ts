@@ -1,7 +1,6 @@
 import { BOARD_HEIGHT, BOARD_WIDTH, type Point, type Stroke, type Tool } from '../shared/protocol';
 import { objectBounds as documentObjectBounds, type CanvasObject } from '../shared/document';
 import { panCamera, scalePanDelta, screenToWorld, SpatialIndex, zoomAround, type Camera } from './viewport';
-import { diagnostics } from './diagnostics';
 
 export interface CanvasCallbacks {
   onBegin(point: Point): void;
@@ -421,7 +420,6 @@ export class CanvasBoard {
     if (!this.enabled || this.pointerId !== null || this.panPointerId !== null || (event.button !== 0 && event.button !== 1)) return;
     const point = this.point(event);
     if (!point) return;
-    diagnostics?.input(event.timeStamp);
     event.preventDefault();
     if (event.button === 1 || this.spaceDown || this.navigationMode) {
       try { this.canvas.setPointerCapture(event.pointerId); } catch { return; }
@@ -525,7 +523,6 @@ export class CanvasBoard {
       .filter((point): point is Point => point !== null);
     const samples = filterSamples(points, this.lastPoint, final);
     if (!samples.length) return;
-    diagnostics?.input(event.timeStamp);
     this.lastPoint = samples[samples.length - 1];
     this.callbacks.onPoints(samples);
   }
@@ -614,7 +611,6 @@ export class CanvasBoard {
   }
 
   private render(): void {
-    const started = diagnostics ? performance.now() : 0;
     this.resizeBacking();
     if (this.objects.some(object => object.type !== 'ink')) {
       this.renderOrderedFrame();
@@ -626,7 +622,6 @@ export class CanvasBoard {
     }
     const visibleIds = new Set(this.strokes.map(stroke => stroke.id));
     for (const id of this.paths.keys()) if (!visibleIds.has(id)) this.paths.delete(id);
-    const compareStarted = diagnostics ? performance.now() : 0;
     const dirty: InkBounds[] = [];
     for (const previous of this.renderedInk.values()) {
       if (!visibleIds.has(previous.stroke.id)) dirty.push(previous.bounds);
@@ -646,7 +641,6 @@ export class CanvasBoard {
     // composite over earlier live ink when new points arrive beneath the eraser.
     const prefixMatches = this.cachedPrefix.length <= stableCount
       && this.cachedPrefix.every((cached, i) => sameInk(cached, this.strokes[i]));
-    diagnostics?.record('prefixCompareMs', performance.now()-compareStarted);
     if (!prefixMatches) {
       const previousPrefix = this.cachedPrefix;
       if (previousPrefix.length) {
@@ -693,7 +687,6 @@ export class CanvasBoard {
     }
     const fullBoard: InkBounds = { left: 0, top: 0, right: BOARD_WIDTH, bottom: BOARD_HEIGHT };
     const regions = this.fullRepaint ? [fullBoard] : mergeBounds(dirty.map(bounds => clampBounds(expandBounds(bounds, 1))));
-    let copyMs = 0, replayMs = 0;
     let repaintArea = 0;
     for (const region of regions) {
       const left = Math.floor(region.left * this.dpr);
@@ -708,13 +701,10 @@ export class CanvasBoard {
       this.context.rect(left / this.dpr, top / this.dpr, (right - left) / this.dpr, (bottom - top) / this.dpr);
       this.context.clip();
       this.context.setTransform(1, 0, 0, 1, 0, 0);
-      const regionCopyStarted = diagnostics ? performance.now() : 0;
       this.context.clearRect(left, top, right - left, bottom - top);
       this.context.globalCompositeOperation = 'source-over';
       this.context.drawImage(this.cache, left, top, right - left, bottom - top, left, top, right - left, bottom - top);
-      if (diagnostics) copyMs += performance.now() - regionCopyStarted;
       setDefaultWorldTransform(this.context, this.dpr);
-      const regionReplayStarted = diagnostics ? performance.now() : 0;
       for (let i = stableCount; i < this.strokes.length; i++) {
         if (canCacheTail && i === cacheStart) {
           this.context.globalCompositeOperation = 'source-over';
@@ -735,26 +725,19 @@ export class CanvasBoard {
         if (!bounds || !intersects(bounds, region)) continue;
         drawObject(this.context, object, this.assets, this.fontReady);
       }
-      if (diagnostics) replayMs += performance.now() - regionReplayStarted;
       this.context.restore();
     }
     setDefaultWorldTransform(this.context, this.dpr);
     drawSelection(this.context, this.objects, this.selectedIds, this.marquee, 1.5);
     this.fullRepaint = false;
-    diagnostics?.record('surfaceCopyMs', copyMs);
-    diagnostics?.record('repaintAreaPx', repaintArea);
-    diagnostics?.record('tailReplayMs', replayMs);
     this.renderedInk.clear();
     for (const stroke of this.strokes) {
       const bounds = strokeBounds(stroke);
       if (bounds) this.renderedInk.set(stroke.id, { stroke: { ...stroke, points: stroke.points.map(point => ({ ...point })) }, bounds });
     }
-    diagnostics?.record('renderMs', performance.now()-started);
-    diagnostics?.painted();
   }
 
   private renderOrderedFrame(): void {
-    const started = diagnostics ? performance.now() : 0;
     const cameraActive = this.camera.zoom !== 1 || this.camera.x !== BOARD_WIDTH / 2 || this.camera.y !== BOARD_HEIGHT / 2;
     const view: InkBounds = {
       left: this.camera.x - this.viewport.width / (2 * this.camera.zoom),
@@ -812,8 +795,6 @@ export class CanvasBoard {
     drawSelection(this.context, this.objects, this.selectedIds, this.marquee, cameraActive ? Math.max(1, 1.5 / this.camera.zoom) : 1.5);
     this.context.setTransform(1, 0, 0, 1, 0, 0);
     this.fullRepaint = false;
-    diagnostics?.record('renderMs', performance.now() - started);
-    diagnostics?.painted();
   }
 
   private renderOrderedInk(

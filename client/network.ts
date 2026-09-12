@@ -3,7 +3,6 @@ import type { CanvasDocument } from '../shared/document';
 import { PROTOCOL_VERSION } from '../shared/protocol';
 import type { AssetMeta, ClientEvents, Command, Cursor, Point, ServerEvents, Snapshot, User, Result } from '../shared/protocol';
 import { DrawingState } from './state';
-import { diagnostics } from './diagnostics';
 
 export type ConnectionStatus = 'connecting'|'connected'|'disconnected'|'syncing';
 interface Callbacks {
@@ -89,9 +88,7 @@ export class Connection {
       // epoch; the snapshot already contains every committed revision up to
       // its capture point.
       if (!this.socket.connected || !this.state.ready) return;
-      const started = diagnostics ? performance.now() : 0;
       const result = state.receive(event);
-      diagnostics?.record('receiveToReduceMs',performance.now()-started);
       if (result === 'resync') this.resync();
       if (result === 'applied') {
         callbacks.drawing();
@@ -125,13 +122,10 @@ export class Connection {
   }
   send(command: Command) {
     if (!this.socket.connected || !this.state.ready || this.resyncPending || this.roomPaused) return false;
-    const started = diagnostics ? performance.now() : 0;
     const generation = this.generation;
-    if (command.type === 'stroke:points') diagnostics?.batch(command.points.length);
     // Check connection before emit: Socket.io's offline send buffer must never hold drawing commands.
     this.socket.timeout(8000).emit('command',command,(error,result) => {
       if (generation !== this.generation || !this.socket.connected || this.destroyed) return;
-      diagnostics?.record('commandAckMs',performance.now()-started);
       if (error || !result?.ok) {
         this.callbacks.error(error || !result ? 'A drawing update was not confirmed. Resyncing…' : !result.ok ? result.error : 'Resyncing…');
         this.resync();

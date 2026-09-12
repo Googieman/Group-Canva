@@ -58,7 +58,6 @@ export class CanvasStorage {
   private readonly factory?: IDBFactory;
   private readonly memory: boolean;
   private dbPromise?: Promise<IDBDatabase>;
-  private failNextSave = false;
 
   async claimWriter(fileId: string): Promise<WriterLease> {
     const locks = (typeof navigator !== 'undefined' ? (navigator as Navigator & { locks?: { request(name: string, options: { ifAvailable: boolean }, callback: (lock: unknown) => Promise<void> | void): Promise<void> } }).locks : undefined);
@@ -131,7 +130,6 @@ export class CanvasStorage {
   }
 
   async saveFile(file: LocalFile): Promise<void> {
-    if (this.failNextSave) { this.failNextSave = false; throw new Error('Unable to save this canvas on the device.'); }
     const next = copy(file);
     validateStoredFile(next);
     if (this.memory) {
@@ -178,9 +176,6 @@ export class CanvasStorage {
       tx.objectStore('files').delete(id);
     });
   }
-
-  /** Test hook for proving an interrupted write does not replace a valid snapshot. */
-  failNextSaveForTests(): void { this.failNextSave = true; }
 
   private open(): Promise<IDBDatabase> {
     return this.dbPromise ??= new Promise((resolve, reject) => {
